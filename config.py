@@ -81,3 +81,4 @@ def setup_logger(name: str = "sa-copytrade") -> logging.Logger:
     return logger
 
 log = setup_logger()
+

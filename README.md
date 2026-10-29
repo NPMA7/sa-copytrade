@@ -125,3 +125,4 @@ Jika ingin menerima notifikasi real-time di Telegram saat bot membuka atau menut
 ## 🛡️ Catatan Keamanan
 - File `.env` berisi data login broker Anda. File ini telah diproteksi dan dikecualikan dari repositori publik.
 - Magic Number unik `889901` disematkan pada setiap order, sehingga bot **hanya mengelola order miliknya sendiri** dan tidak akan mengganggu order manual lain yang Anda buka di terminal yang sama.
+

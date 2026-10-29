@@ -104,3 +104,4 @@ class RiskManager:
                 final_tp = round(entry_price - tp_distance, digits)
 
         return round(final_sl, digits), round(final_tp, digits)
+

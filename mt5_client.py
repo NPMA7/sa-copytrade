@@ -33,7 +33,7 @@ class MT5Client:
         try:
             log.info("Menghubungi terminal MT5 di %s:%s...", self.host, self.port)
             self.conn = rpyc.classic.connect(self.host, self.port)
-            self.conn._config["sync_request_timeout"] = 60
+            self.conn._config["sync_request_timeout"] = 30
 
             # Remote setup MT5 di Windows/Wine
             self.conn.execute("""
@@ -43,16 +43,18 @@ if 'C:\\\\mt5libs' not in sys.path:
 import MetaTrader5 as mt5
 
 def _client_init(login, password, server, ip_server):
-    ok = mt5.initialize(path="C:\\\\MT5\\\\terminal64.exe", portable=True)
+    # Coba attach langsung ke terminal yang sedang berjalan
+    ok = mt5.initialize()
     if not ok:
-        ok = mt5.initialize()
+        ok = mt5.initialize(path="C:\\\\MT5\\\\terminal64.exe", portable=True)
     if ok and login and password:
-        # Coba login dengan server name
-        logged_in = mt5.login(login, password=password, server=server)
-        if not logged_in and ip_server:
-            # Fallback ke IP server langsung
-            srv = ip_server if ":" in ip_server else ip_server + ":443"
-            logged_in = mt5.login(login, password=password, server=srv)
+        acc = mt5.account_info()
+        # Hanya login jika belum terhubung atau nomor login berbeda
+        if not acc or acc.login != login:
+            logged_in = mt5.login(login, password=password, server=server)
+            if not logged_in and ip_server:
+                srv = ip_server if ":" in ip_server else ip_server + ":443"
+                mt5.login(login, password=password, server=srv)
     return ok
 """)
             init_ok = self.conn.eval(
@@ -60,9 +62,10 @@ def _client_init(login, password, server, ip_server):
             )
             if not init_ok:
                 err = self.conn.eval("mt5.last_error()")
-                log.error("Gagal inisialisasi MT5: %s", err)
-                self._connected = False
-                return False
+                log.warning("MT5 initialize mengembalikan False: %s", err)
+                # Tetap anggap terkoneksi ke RPyC untuk retry di loop berikutnya
+                self._connected = True
+                return True
 
             self._connected = True
             log.info("✓ Terhubung ke MetaTrader 5 terminal!")
@@ -129,13 +132,11 @@ def _get_acc_dict():
         try:
             self.conn.execute(f"""
 def _find_symbol(target):
-    # Cek simbol langsung
     t = target.upper()
     info = mt5.symbol_info(t)
     if info:
         mt5.symbol_select(t, True)
         return t
-    # Cari variasi nama pair dengan prefix/suffix broker
     all_syms = mt5.symbols_get()
     if all_syms:
         for s in all_syms:
@@ -240,13 +241,11 @@ def _get_positions(m):
         price = sym_info["ask"] if is_buy else sym_info["bid"]
         order_type_str = "mt5.ORDER_TYPE_BUY" if is_buy else "mt5.ORDER_TYPE_SELL"
 
-        # Kirim order dengan fallback filling type
         try:
             self.conn.execute(f"""
 def _send_open_order(sym, order_type, vol, price, sl, tp, magic, comment):
     import MetaTrader5 as mt5
 
-    # Coba berbagai mode filling yang didukung broker (IOC, RETURN, FOK)
     filling_modes = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN, mt5.ORDER_FILLING_FOK]
     last_err = None
 
@@ -270,7 +269,6 @@ def _send_open_order(sym, order_type, vol, price, sl, tp, magic, comment):
             return {{"ok": True, "ticket": int(res.order), "price": float(res.price), "comment": str(res.comment)}}
         elif res:
             last_err = f"retcode={{res.retcode}}: {{res.comment}}"
-            # Jika bukan masalah filling type, jangan lanjut loop
             if res.retcode != 10030:
                 break
         else:

@@ -8,8 +8,7 @@ services:
     entrypoint: ["/bin/sh", "-c", "rm -f /opt/wineprefix/drive_c/server; exec /app/src/main.sh"]
     ports:
       - "127.0.0.1:18813:18812"
-      - "127.0.0.1:5902:5901"
-      - "0.0.0.0:${MT5_WEB_PORT:-3002}:8080"
+      - "0.0.0.0:5902:5901"
     environment:
       NOVNC_HOST: ""
       LOGIN: "${MT5_LOGIN:-17607969}"
@@ -18,8 +17,17 @@ services:
       MT5_LOGIN: "${MT5_LOGIN:-17607969}"
       MT5_PASSWORD: "${MT5_PASSWORD}"
       MT5_SERVER: "${MT5_SERVER:-Headway-Real}"
+
+  novnc-proxy:
+    image: nginx:alpine
+    container_name: sa-copytrade-novnc
+    restart: unless-stopped
+    depends_on:
+      - mt5-real
+    ports:
+      - "0.0.0.0:${MT5_WEB_PORT:-3002}:3002"
     volumes:
-      - mt5-real-data:/opt/wineprefix/drive_c
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
 
   bot:
     build:
@@ -43,6 +51,3 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./.env:/app/.env:ro
-
-volumes:
-  mt5-real-data:

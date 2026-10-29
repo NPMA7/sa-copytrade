@@ -147,3 +147,4 @@ def get_trade_history(limit: int = 20) -> list[dict]:
             (limit,),
         )
         return [dict(r) for r in cur.fetchall()]
+
