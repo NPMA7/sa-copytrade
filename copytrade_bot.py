@@ -245,6 +245,25 @@ async def poll_reconciliation_task() -> None:
                         close_reason="BROKER_SL_TP",
                     )
 
+            # 5. Sinkronisasi posisi terbuka Strategy Arena yang belum ada di MT5
+            db_symbols = {p["symbol"].upper() for p in db_open_positions}
+            mt5_symbols = {p["symbol"].upper() for p in mt5_active}
+
+            for p in arena_positions:
+                sym = p.get("symbol", "").upper()
+                if sym not in db_symbols and sym not in mt5_symbols:
+                    log.info("🔍 REKONSILIASI: Menemukan posisi aktif '%s' (%s) di Strategy Arena. Menyinkronkan ke MT5...", sym, p.get("side"))
+                    sig_to_open = {
+                        "symbol": sym,
+                        "side": p.get("side", "LONG"),
+                        "action": f"OPEN_{p.get('side', 'LONG')}",
+                        "price": p.get("current_price"),
+                        "stop_loss": p.get("stop_loss"),
+                        "take_profit": p.get("take_profit"),
+                        "strategy": p.get("strategy", TARGET_STRATEGY),
+                    }
+                    await execute_open_signal(sig_to_open, acc_info)
+
         except asyncio.CancelledError:
             break
         except Exception as exc:
