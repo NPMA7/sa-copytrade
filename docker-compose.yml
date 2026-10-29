@@ -1,0 +1,48 @@
+name: sa-copytrade
+
+services:
+  mt5-real:
+    image: lprett/mt5linux:latest
+    container_name: sa-copytrade-mt5
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c", "rm -f /opt/wineprefix/drive_c/server; exec /app/src/main.sh"]
+    ports:
+      - "127.0.0.1:18813:18812"
+      - "127.0.0.1:5902:5901"
+      - "0.0.0.0:${MT5_WEB_PORT:-3002}:8080"
+    environment:
+      NOVNC_HOST: ""
+      LOGIN: "${MT5_LOGIN:-17607969}"
+      PASSWORD: "${MT5_PASSWORD}"
+      SERVER: "${MT5_SERVER:-Headway-Real}"
+      MT5_LOGIN: "${MT5_LOGIN:-17607969}"
+      MT5_PASSWORD: "${MT5_PASSWORD}"
+      MT5_SERVER: "${MT5_SERVER:-Headway-Real}"
+    volumes:
+      - mt5-real-data:/opt/wineprefix/drive_c
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sa-copytrade-bot:latest
+    container_name: sa-copytrade-bot
+    restart: unless-stopped
+    depends_on:
+      - mt5-real
+    env_file:
+      - .env
+    environment:
+      MT5_HOST: "mt5-real"
+      MT5_PORT: "18812"
+      ARENA_BASE_URL: "${ARENA_BASE_URL:-http://172.17.0.1:8080}"
+      ARENA_WS_URL: "${ARENA_WS_URL:-ws://172.17.0.1:8080/ws/signals}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+
+volumes:
+  mt5-real-data:
