@@ -30,6 +30,7 @@ ARENA_API_KEY = os.getenv("ARENA_API_KEY", "pk_live_strategyarena_public_feed")
 TARGET_STRATEGY = os.getenv("TARGET_STRATEGY", "gap_fill")
 TARGET_STRATEGY_NAME = os.getenv("TARGET_STRATEGY_NAME", "Gap Fill Reversal")
 TARGET_MODE = os.getenv("TARGET_MODE", "forex")
+AUTO_SYNC_PAST_TRADES = os.getenv("AUTO_SYNC_PAST_TRADES", "false").lower() in ("true", "1", "yes")
 
 # Risk & Money Management (Dirancang untuk modal $1,000 USD)
 LOT_SIZING_MODE = os.getenv("LOT_SIZING_MODE", "FIXED").upper()  # "FIXED" | "PROPORTIONAL"

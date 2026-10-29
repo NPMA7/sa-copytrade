@@ -20,6 +20,7 @@ from config import (
     TARGET_STRATEGY,
     TARGET_STRATEGY_NAME,
     TARGET_MODE,
+    AUTO_SYNC_PAST_TRADES,
     POLL_INTERVAL_SEC,
     MT5_MAGIC_NUMBER,
     TELEGRAM_BOT_TOKEN,
@@ -246,23 +247,26 @@ async def poll_reconciliation_task() -> None:
                     )
 
             # 5. Sinkronisasi posisi terbuka Strategy Arena yang belum ada di MT5
-            db_symbols = {p["symbol"].upper() for p in db_open_positions}
-            mt5_symbols = {p["symbol"].upper() for p in mt5_active}
+            # PENTING: Dinonaktifkan secara default (AUTO_SYNC_PAST_TRADES=False) agar tidak masuk
+            # ke posisi lama yang sudah berjalan dengan harga entry berbeda. Bot hanya menunggu entry sinyal baru!
+            if AUTO_SYNC_PAST_TRADES:
+                db_symbols = {p["symbol"].upper() for p in db_open_positions}
+                mt5_symbols = {p["symbol"].upper() for p in mt5_active}
 
-            for p in arena_positions:
-                sym = p.get("symbol", "").upper()
-                if sym not in db_symbols and sym not in mt5_symbols:
-                    log.info("🔍 REKONSILIASI: Menemukan posisi aktif '%s' (%s) di Strategy Arena. Menyinkronkan ke MT5...", sym, p.get("side"))
-                    sig_to_open = {
-                        "symbol": sym,
-                        "side": p.get("side", "LONG"),
-                        "action": f"OPEN_{p.get('side', 'LONG')}",
-                        "price": p.get("current_price"),
-                        "stop_loss": p.get("stop_loss"),
-                        "take_profit": p.get("take_profit"),
-                        "strategy": p.get("strategy", TARGET_STRATEGY),
-                    }
-                    await execute_open_signal(sig_to_open, acc_info)
+                for p in arena_positions:
+                    sym = p.get("symbol", "").upper()
+                    if sym not in db_symbols and sym not in mt5_symbols:
+                        log.info("🔍 REKONSILIASI: Menemukan posisi aktif '%s' (%s) di Strategy Arena. Menyinkronkan ke MT5...", sym, p.get("side"))
+                        sig_to_open = {
+                            "symbol": sym,
+                            "side": p.get("side", "LONG"),
+                            "action": f"OPEN_{p.get('side', 'LONG')}",
+                            "price": p.get("current_price"),
+                            "stop_loss": p.get("stop_loss"),
+                            "take_profit": p.get("take_profit"),
+                            "strategy": p.get("strategy", TARGET_STRATEGY),
+                        }
+                        await execute_open_signal(sig_to_open, acc_info)
 
         except asyncio.CancelledError:
             break
