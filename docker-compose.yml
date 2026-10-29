@@ -26,6 +26,7 @@ services:
       - mt5-real
     ports:
       - "0.0.0.0:${MT5_WEB_PORT:-3002}:3002"
+      - "0.0.0.0:3000:3000"
     volumes:
       - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
 
