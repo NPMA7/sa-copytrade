@@ -13,6 +13,7 @@ from config import (
     ENFORCE_SL,
     DEFAULT_SL_PIPS,
     DEFAULT_TP_PIPS,
+    ALLOW_HEDGING,
     log,
 )
 import trade_storage
@@ -49,6 +50,7 @@ class RiskManager:
         equity: float,
         balance: float,
         current_open_positions: list[dict],
+        strategy: str = "",
     ) -> Tuple[bool, str]:
         """Pemeriksaan pra-eksekusi (pre-trade checks) sebelum mengirim order ke broker Headway."""
         # 1. Periksa batas minimum equity (Emergency Floor)
@@ -75,11 +77,26 @@ class RiskManager:
             return False, msg
 
         # 4. Periksa apakah sudah ada posisi aktif untuk simbol ini
-        for pos in current_open_positions:
-            if pos.get("symbol") == symbol:
-                msg = f"Simbol {symbol} sudah memiliki posisi terbuka. Menghindari duplikasi eksposur."
-                log.info("ℹ️ RISK GUARD: %s", msg)
-                return False, msg
+        clean_sym = symbol.upper()
+        if ALLOW_HEDGING:
+            # Multi-strategy hedging diizinkan:
+            # Strategi berbeda boleh membuka posisi di simbol yang sama (misal ROC SHORT & Gap Fill LONG)
+            # Tetapi strategi YANG SAMA dilarang membuka duplikat di simbol yang sama
+            for pos in current_open_positions:
+                pos_sym = pos.get("symbol", "").upper()
+                pos_comment = pos.get("comment", "")
+                if pos_sym == clean_sym:
+                    if strategy and (pos_comment == f"SA:{strategy}" or pos.get("strategy") == strategy):
+                        msg = f"Strategi '{strategy}' sudah memiliki posisi aktif di {symbol}. Menghindari duplikasi internal strategi."
+                        log.info("ℹ️ RISK GUARD: %s", msg)
+                        return False, msg
+        else:
+            # Mode Strict: 1 simbol hanya boleh ada 1 posisi terlepas dari strateginya
+            for pos in current_open_positions:
+                if pos.get("symbol", "").upper() == clean_sym:
+                    msg = f"Simbol {symbol} sudah memiliki posisi terbuka di MT5 (ALLOW_HEDGING=false). Menghindari duplikasi eksposur."
+                    log.info("ℹ️ RISK GUARD: %s", msg)
+                    return False, msg
 
         return True, "OK"
 

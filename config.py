@@ -44,6 +44,11 @@ TARGET_STRATEGY_NAME = os.getenv("TARGET_STRATEGY_NAME", _default_names)
 TARGET_MODE = os.getenv("TARGET_MODE", "forex")
 AUTO_SYNC_PAST_TRADES = os.getenv("AUTO_SYNC_PAST_TRADES", "false").lower() in ("true", "1", "yes")
 
+# Multi-Strategy Hedging Configuration
+# true: strategi berbeda boleh buka posisi berlawanan di pair yang sama (misal ROC SHORT & Gap Fill LONG)
+# false: strict single-symbol exposure (1 pair hanya boleh 1 posisi terlepas dari strateginya)
+ALLOW_HEDGING = os.getenv("ALLOW_HEDGING", "true").lower() in ("true", "1", "yes")
+
 # Risk & Money Management (Dirancang untuk modal $1,000 USD)
 LOT_SIZING_MODE = os.getenv("LOT_SIZING_MODE", "FIXED").upper()  # "FIXED" | "PROPORTIONAL"
 BASE_LOT = float(os.getenv("BASE_LOT", "0.01"))

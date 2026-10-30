@@ -26,6 +26,7 @@ from config import (
     TARGET_STRATEGY_NAME,
     TARGET_MODE,
     AUTO_SYNC_PAST_TRADES,
+    ALLOW_HEDGING,
     POLL_INTERVAL_SEC,
     MT5_MAGIC_NUMBER,
     MIN_EQUITY_USD,
@@ -167,15 +168,31 @@ async def handle_posisi_command(arg: str, chat_id: str) -> None:
                 lines.append(f"  ├ SL: <code>{float(sl):.5f}</code> | TP: <code>{float(tp):.5f}</code>")
             lines.append(f"  ├ Floating Arena: <code>{pnl_usd:+.2f} USD</code>")
 
-            # Cek status di MT5 Real kita
-            if sym in mt5_pos_map:
-                m_pos = mt5_pos_map[sym]
-                lines.append(f"  └ <b>Status MT5 Real:</b> 🟢 <b>OPEN</b> (Ticket #{m_pos.get('ticket')}, Lot: {m_pos.get('volume'):.2f}, Profit: ${m_pos.get('profit', 0.0):+.2f})")
-            elif sym in db_pos_map:
-                d_pos = db_pos_map[sym]
-                lines.append(f"  └ <b>Status MT5 Real:</b> 🟡 <b>TERCATAT</b> (Ticket #{d_pos.get('ticket')})")
+            # Cek status di MT5 Real kita yang spesifik untuk strategi ini
+            found_mt5 = None
+            for mp in mt5_open:
+                if mp.get("symbol", "").upper() == sym:
+                    if mp.get("comment") == f"SA:{sid}":
+                        found_mt5 = mp
+                        break
+                    elif not found_mt5 and not ALLOW_HEDGING:
+                        found_mt5 = mp
+
+            found_db = None
+            for dp in db_open:
+                if dp.get("symbol", "").upper() == sym:
+                    if dp.get("strategy") == sid:
+                        found_db = dp
+                        break
+                    elif not found_db and not ALLOW_HEDGING:
+                        found_db = dp
+
+            if found_mt5 and (found_mt5.get("comment") == f"SA:{sid}" or not ALLOW_HEDGING):
+                lines.append(f"  └ <b>Status MT5 Real:</b> 🟢 <b>OPEN</b> (Ticket #{found_mt5.get('ticket')}, Lot: {found_mt5.get('volume'):.2f}, Profit: ${found_mt5.get('profit', 0.0):+.2f})")
+            elif found_db and (found_db.get("strategy") == sid or not ALLOW_HEDGING):
+                lines.append(f"  └ <b>Status MT5 Real:</b> 🟡 <b>TERCATAT</b> (Ticket #{found_db.get('ticket')})")
             else:
-                lines.append(f"  └ <b>Status MT5 Real:</b> ⏳ Menunggu sinyal baru (Posisi lama tidak dibuka otomatis)")
+                lines.append(f"  └ <b>Status MT5 Real:</b> ⏳ Standby")
 
         lines.append("")
 
@@ -220,7 +237,12 @@ async def handle_my_posisi_command(chat_id: str) -> None:
         tp = p.get("tp", 0.0)
         profit = p.get("profit", 0.0)
         comment = p.get("comment", "")
-        time_sec = p.get("time", 0)
+        db_record = trade_storage.get_open_position_by_ticket(ticket)
+        if db_record and db_record.get("open_time"):
+            time_sec = float(db_record["open_time"])
+        else:
+            broker_time = p.get("time", 0)
+            time_sec = (broker_time - 7200) if (broker_time - time.time() > 3600) else broker_time
 
         dt_wib = datetime.datetime.fromtimestamp(time_sec, tz=datetime.timezone(datetime.timedelta(hours=7))) if time_sec else None
         time_str = f"{dt_wib.strftime('%H:%M:%S')} WIB" if dt_wib else "—"
@@ -277,7 +299,6 @@ async def handle_telegram_command(text: str, chat_id: str) -> None:
             "  Melihat posisi aktif strategi tertentu.\n"
             "  <i>Contoh:</i>\n"
             "  - <code>/posisi roc_momentum</code>\n"
-            "  - <code>/posisi price_ema_dev</code>\n"
             "  - <code>/posisi gap_fill</code>\n\n"
             "• <code>/status</code>\n"
             "  Cek saldo akun MT5, equity, margin, dan status bot.\n\n"
@@ -297,6 +318,7 @@ async def handle_telegram_command(text: str, chat_id: str) -> None:
         if acc:
             stop_str = f"{MIN_EQUITY_USD} {acc['currency']}" if MIN_EQUITY_USD > 0 else "0 (Sampai saldo habis)"
             strats_list = "\n".join(f"  {i+1}. {STRATEGY_NAMES_MAP.get(s, s)} (<code>{s}</code>)" for i, s in enumerate(TARGET_STRATEGIES))
+            hedging_str = "🟢 AKTIF (Strategi berbeda boleh buka di pair sama)" if ALLOW_HEDGING else "🔴 NONAKTIF (1 pair 1 posisi)"
             status_msg = (
                 "📊 <b>Status Copy-Trade Engine (Headway Real)</b>\n\n"
                 f"• <b>Login:</b> <code>{acc['login']}</code> ({acc['server']})\n"
@@ -305,7 +327,8 @@ async def handle_telegram_command(text: str, chat_id: str) -> None:
                 f"• <b>Floating PnL:</b> <code>{acc['profit']:+,.2f} {acc['currency']}</code>\n"
                 f"• <b>Margin Terpakai:</b> <code>{acc['margin']:,.2f} {acc['currency']}</code>\n"
                 f"• <b>Margin Bebas:</b> <code>{acc['margin_free']:,.2f} {acc['currency']}</code>\n"
-                f"• <b>Batas Stop:</b> <code>{stop_str}</code>\n\n"
+                f"• <b>Batas Stop:</b> <code>{stop_str}</code>\n"
+                f"• <b>Multi-Strategy Hedging:</b> <code>{hedging_str}</code>\n\n"
                 "🎯 <b>Strategi yang Diikuti:</b>\n"
                 f"{strats_list}\n\n"
                 f"📈 <b>Posisi Terbuka MT5:</b> {len(open_pos)} trade (DB: {len(db_open)})"
@@ -427,14 +450,20 @@ async def execute_open_signal(sig: dict, acc_info: dict) -> None:
         return
 
     # 1. Cek database & MT5 apakah posisi sudah terbuka
-    existing_db = trade_storage.get_open_position_by_symbol(symbol)
-    if existing_db:
-        log.info("⏩ Mengabaikan sinyal: Simbol %s sudah aktif di database (Ticket #%s)", symbol, existing_db["ticket"])
-        return
+    if ALLOW_HEDGING:
+        existing_db = trade_storage.get_open_position_by_strategy_symbol(strategy_id, symbol)
+        if existing_db:
+            log.info("⏩ Mengabaikan sinyal: Strategi '%s' sudah memiliki posisi aktif di %s (Ticket #%s)", strategy_id, symbol, existing_db["ticket"])
+            return
+    else:
+        existing_db = trade_storage.get_open_position_by_symbol(symbol)
+        if existing_db:
+            log.info("⏩ Mengabaikan sinyal: Simbol %s sudah aktif di database (Ticket #%s, ALLOW_HEDGING=false)", symbol, existing_db["ticket"])
+            return
 
     # 2. Risk Management Pre-Checks
     open_positions = mt5.get_open_positions(MT5_MAGIC_NUMBER)
-    can_open, reason = RiskManager.can_open_position(symbol, equity, balance, open_positions)
+    can_open, reason = RiskManager.can_open_position(symbol, equity, balance, open_positions, strategy=strategy_id)
     if not can_open:
         log.warning("🛑 Sinyal %s %s dibatalkan: %s", action, symbol, reason)
         return
@@ -514,9 +543,13 @@ async def execute_close_signal(sig: dict, acc_info: dict) -> None:
         return
 
     # Cari posisi di database
-    db_pos = trade_storage.get_open_position_by_symbol(symbol)
-    ticket_to_close = None
+    db_pos = None
+    if strategy_id and ALLOW_HEDGING:
+        db_pos = trade_storage.get_open_position_by_strategy_symbol(strategy_id, symbol)
+    if not db_pos:
+        db_pos = trade_storage.get_open_position_by_symbol(symbol)
 
+    ticket_to_close = None
     if db_pos:
         ticket_to_close = db_pos["ticket"]
         strategy_id = db_pos.get("strategy", strategy_id or TARGET_STRATEGY)
@@ -524,9 +557,12 @@ async def execute_close_signal(sig: dict, acc_info: dict) -> None:
         # Cek langsung di MT5 jika tidak ada di database lokal
         open_positions = mt5.get_open_positions(MT5_MAGIC_NUMBER)
         for p in open_positions:
-            if symbol in p["symbol"]:
-                ticket_to_close = p["ticket"]
-                break
+            if symbol == p.get("symbol"):
+                if strategy_id and p.get("comment") == f"SA:{strategy_id}":
+                    ticket_to_close = p["ticket"]
+                    break
+                elif not ticket_to_close:
+                    ticket_to_close = p["ticket"]
 
     if not ticket_to_close:
         log.info("ℹ️ Sinyal tutup %s diterima, tetapi tidak ada posisi terbuka untuk %s.", action, symbol)
@@ -645,19 +681,32 @@ async def poll_reconciliation_task() -> None:
             # Tangkap posisi jika:
             # a) AUTO_SYNC_PAST_TRADES = True, ATAU
             # b) Posisi baru saja dibuka (usia <= 15 menit) yang terlewat saat restart server atau reconnect WebSocket
-            db_symbols = {p["symbol"].upper() for p in db_open_positions}
-            mt5_symbols = {p["symbol"].upper() for p in mt5_active}
+            if ALLOW_HEDGING:
+                active_keys = {(p.get("strategy", "").lower(), p.get("symbol", "").upper()) for p in db_open_positions}
+                mt5_keys = {(p.get("comment", "").replace("SA:", "").lower(), p.get("symbol", "").upper()) for p in mt5_active}
+            else:
+                db_symbols = {p["symbol"].upper() for p in db_open_positions}
+                mt5_symbols = {p["symbol"].upper() for p in mt5_active}
 
             for p in arena_positions:
                 sym = p.get("symbol", "").upper()
                 strat = p.get("strategy", TARGET_STRATEGY)
+                strat_key = (strat.lower(), sym)
                 open_ts = p.get("opened_at", 0)
                 open_sec = open_ts / 1000.0 if open_ts > 1e12 else float(open_ts)
                 age_sec = max(0, time.time() - open_sec) if open_sec > 0 else 999999
 
                 is_fresh_trade = age_sec <= 900  # Posisi baru dibuka dalam 15 menit terakhir
 
-                if (AUTO_SYNC_PAST_TRADES or is_fresh_trade) and sym not in db_symbols and sym not in mt5_symbols:
+                needs_sync = False
+                if ALLOW_HEDGING:
+                    if (AUTO_SYNC_PAST_TRADES or is_fresh_trade) and strat_key not in active_keys and strat_key not in mt5_keys:
+                        needs_sync = True
+                else:
+                    if (AUTO_SYNC_PAST_TRADES or is_fresh_trade) and sym not in db_symbols and sym not in mt5_symbols:
+                        needs_sync = True
+
+                if needs_sync:
                     log.info(
                         "🔍 REKONSILIASI: Menemukan posisi aktif '%s' (%s - %s, usia: %.0fs) di Strategy Arena. Menyinkronkan ke MT5...",
                         sym, p.get("side"), strat, age_sec
@@ -672,8 +721,12 @@ async def poll_reconciliation_task() -> None:
                         "strategy": strat,
                     }
                     await execute_open_signal(sig_to_open, acc_info)
-                    db_symbols.add(sym)
-                    mt5_symbols.add(sym)
+                    if ALLOW_HEDGING:
+                        active_keys.add(strat_key)
+                        mt5_keys.add(strat_key)
+                    else:
+                        db_symbols.add(sym)
+                        mt5_symbols.add(sym)
 
         except asyncio.CancelledError:
             break
