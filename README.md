@@ -3,7 +3,7 @@
 Program Copy-Trading otomatis profesional untuk menyalin sinyal dari **Strategy Arena** secara real-time ke akun **MetaTrader 5 Real (Headway)**.
 
 Khusus dikonfigurasi dan dioptimasi untuk menyalin strategi forex:
-> 🎯 **Target Strategi:** `ROC Momentum 12` (`roc_momentum`) & `EMA Deviation` (`price_ema_dev`)  
+> 🎯 **Target Strategi:** `ROC Momentum 12` (`roc_momentum`), `EMA Deviation` (`price_ema_dev`) & `Gap Fill Reversal` (`gap_fill`)  
 > 💰 **Modal Riil:** `$350.50 USD` (Batas Stop Equity: `$10.00 USD`)  
 > 🏦 **Broker:** Headway (`Headway-Real` / `mt5.real.trade-hw.online`)  
 > 🔑 **Nomor Akun (Login):** `17607969`
@@ -13,7 +13,7 @@ Khusus dikonfigurasi dan dioptimasi untuk menyalin strategi forex:
 ## 📋 Fitur Utama & Proteksi Modal
 
 1. **Sub-Millisecond Multi-Strategi (WebSocket + REST Sync Watchdog)**:
-   - Terhubung langsung ke WebSocket feed Strategy Arena (`ws://.../ws/signals?strategy=roc_momentum,price_ema_dev&mode=forex`).
+   - Terhubung langsung ke WebSocket feed Strategy Arena (`ws://.../ws/signals?strategy=roc_momentum,price_ema_dev,gap_fill&mode=forex`).
    - Mendukung eksekusi multi-strategi secara simultan dengan alokasi lot dan perlindungan margin independen.
    - Dilengkapi sistem rekonsiliasi audit berkala (setiap 10 detik) via REST API untuk menjamin **tidak ada order atau penutupan posisi yang terlewat**.
 2. **Manajemen Resiko Ketat**:
