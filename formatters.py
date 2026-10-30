@@ -18,3 +18,4 @@ def format_price(price: Any, symbol: str = "") -> str:
     if any(k in sym for k in ["JPY", "XAU", "GOLD", "XAG", "SILVER", "XTI", "OIL", "USOIL"]):
         return f"{p:.3f}"
     return f"{p:.5f}"
+
