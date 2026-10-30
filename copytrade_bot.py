@@ -183,6 +183,79 @@ async def handle_posisi_command(arg: str, chat_id: str) -> None:
     send_telegram_alert(full_msg, chat_id=chat_id, parse_mode="HTML")
 
 
+async def handle_my_posisi_command(chat_id: str) -> None:
+    """Menampilkan daftar seluruh trade riil di akun MT5 yang sedang aktif."""
+    open_positions = mt5.get_open_positions() if mt5 else []
+    acc = mt5.get_account_info() if mt5 else None
+
+    if not open_positions:
+        msg = (
+            "💼 <b>Posisi Aktif Akun MT5 Anda:</b>\n\n"
+            "<i>Saat ini tidak ada posisi terbuka (0 trade aktif). Akun dalam kondisi standby.</i>"
+        )
+        if acc:
+            msg += (
+                f"\n\n• <b>Saldo:</b> <code>${acc.get('balance', 0.0):.2f} USD</code>\n"
+                f"• <b>Equity:</b> <code>${acc.get('equity', 0.0):.2f} USD</code>\n"
+                f"• <b>Free Margin:</b> <code>${acc.get('margin_free', 0.0):.2f} USD</code>"
+            )
+        send_telegram_alert(msg, chat_id=chat_id, parse_mode="HTML")
+        return
+
+    total_profit = sum(p.get("profit", 0.0) for p in open_positions)
+    pnl_sign = "+" if total_profit >= 0 else ""
+    lines = [
+        f"💼 <b>Posisi Aktif Akun MT5 Anda ({len(open_positions)} Trade)</b>\n"
+    ]
+
+    for p in open_positions:
+        sym = p.get("symbol", "").upper()
+        side = p.get("side", "LONG")
+        side_badge = "🟢 BUY" if side == "LONG" else "🔴 SELL"
+        ticket = p.get("ticket")
+        vol = p.get("volume", 0.01)
+        px_open = p.get("price_open", 0.0)
+        px_cur = p.get("price_current", 0.0)
+        sl = p.get("sl", 0.0)
+        tp = p.get("tp", 0.0)
+        profit = p.get("profit", 0.0)
+        comment = p.get("comment", "")
+        time_sec = p.get("time", 0)
+
+        dt_wib = datetime.datetime.fromtimestamp(time_sec, tz=datetime.timezone(datetime.timedelta(hours=7))) if time_sec else None
+        time_str = f"{dt_wib.strftime('%H:%M:%S')} WIB" if dt_wib else "—"
+
+        profit_str = f"+${profit:.2f}" if profit >= 0 else f"-${abs(profit):.2f}"
+        profit_emoji = "🟢" if profit >= 0 else "🔴"
+
+        digits = 2 if ("XAU" in sym or "JPY" in sym) else 5
+
+        lines.append(f"• <b>{sym}</b> [{side_badge}] <code>#{ticket}</code>")
+        lines.append(f"  ├ Waktu Open: <code>{time_str}</code>")
+        lines.append(f"  ├ Lot: <code>{vol:.2f} Lot</code>")
+        lines.append(f"  ├ Entry: <code>{px_open:.{digits}f}</code> | Kini: <code>{px_cur:.{digits}f}</code>")
+        if sl > 0 or tp > 0:
+            sl_s = f"{sl:.{digits}f}" if sl > 0 else "—"
+            tp_s = f"{tp:.{digits}f}" if tp > 0 else "—"
+            lines.append(f"  ├ SL: <code>{sl_s}</code> | TP: <code>{tp_s}</code>")
+        lines.append(f"  ├ Floating PnL: {profit_emoji} <b>{profit_str}</b>")
+        if comment:
+            lines.append(f"  └ Catatan: <code>{comment}</code>")
+        else:
+            lines.append(f"  └ Status: 🟢 <b>AKTIF</b>")
+        lines.append("")
+
+    if acc:
+        lines.append(
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Total Floating PnL:</b> <code>{pnl_sign}${total_profit:.2f} USD</code>\n"
+            f"• <b>Equity MT5:</b> <code>${acc.get('equity', 0.0):.2f} USD</code>\n"
+            f"• <b>Free Margin:</b> <code>${acc.get('margin_free', 0.0):.2f} USD</code>"
+        )
+
+    send_telegram_alert("\n".join(lines).strip(), chat_id=chat_id, parse_mode="HTML")
+
+
 async def handle_telegram_command(text: str, chat_id: str) -> None:
     """Memproses perintah yang dikirimkan user di Telegram."""
     clean_text = text.strip()
@@ -196,6 +269,8 @@ async def handle_telegram_command(text: str, chat_id: str) -> None:
         help_msg = (
             "🤖 <b>SA Copy-Trade Control Bot</b>\n\n"
             "Perintah yang dapat Anda gunakan:\n\n"
+            "• <code>/my-posisi</code> (atau <code>/my_posisi</code>)\n"
+            "  Melihat seluruh trade riil akun MT5 Anda yang sedang aktif.\n\n"
             "• <code>/posisi</code>\n"
             "  Melihat posisi aktif dari semua strategi yang diikuti.\n\n"
             "• <code>/posisi &lt;nama_strategi&gt;</code>\n"
@@ -210,6 +285,9 @@ async def handle_telegram_command(text: str, chat_id: str) -> None:
             "  Tampilkan pesan panduan ini."
         )
         send_telegram_alert(help_msg, chat_id=chat_id, parse_mode="HTML")
+
+    elif cmd in ("/my-posisi", "/my_posisi", "/myposisi"):
+        await handle_my_posisi_command(chat_id)
 
     elif cmd == "/status":
         acc = mt5.get_account_info()
@@ -251,7 +329,8 @@ async def telegram_command_listener() -> None:
     try:
         set_cmd_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMyCommands"
         commands = [
-            {"command": "posisi", "description": "Cek posisi aktif (cth: /posisi roc_momentum)"},
+            {"command": "my_posisi", "description": "Cek posisi aktif di akun MT5 Anda"},
+            {"command": "posisi", "description": "Cek posisi strategi di Strategy Arena"},
             {"command": "status", "description": "Cek saldo MT5, equity & status engine"},
             {"command": "help", "description": "Panduan perintah bot"},
         ]
@@ -563,27 +642,38 @@ async def poll_reconciliation_task() -> None:
                     )
 
             # 5. Sinkronisasi posisi terbuka Strategy Arena yang belum ada di MT5
-            # PENTING: Dinonaktifkan secara default (AUTO_SYNC_PAST_TRADES=False) agar tidak masuk
-            # ke posisi lama yang sudah berjalan dengan harga entry berbeda. Bot hanya menunggu entry sinyal baru!
-            if AUTO_SYNC_PAST_TRADES:
-                db_symbols = {p["symbol"].upper() for p in db_open_positions}
-                mt5_symbols = {p["symbol"].upper() for p in mt5_active}
+            # Tangkap posisi jika:
+            # a) AUTO_SYNC_PAST_TRADES = True, ATAU
+            # b) Posisi baru saja dibuka (usia <= 15 menit) yang terlewat saat restart server atau reconnect WebSocket
+            db_symbols = {p["symbol"].upper() for p in db_open_positions}
+            mt5_symbols = {p["symbol"].upper() for p in mt5_active}
 
-                for p in arena_positions:
-                    sym = p.get("symbol", "").upper()
-                    strat = p.get("strategy", TARGET_STRATEGY)
-                    if sym not in db_symbols and sym not in mt5_symbols:
-                        log.info("🔍 REKONSILIASI: Menemukan posisi aktif '%s' (%s - %s) di Strategy Arena. Menyinkronkan ke MT5...", sym, p.get("side"), strat)
-                        sig_to_open = {
-                            "symbol": sym,
-                            "side": p.get("side", "LONG"),
-                            "action": f"OPEN_{p.get('side', 'LONG')}",
-                            "price": p.get("current_price"),
-                            "stop_loss": p.get("stop_loss"),
-                            "take_profit": p.get("take_profit"),
-                            "strategy": strat,
-                        }
-                        await execute_open_signal(sig_to_open, acc_info)
+            for p in arena_positions:
+                sym = p.get("symbol", "").upper()
+                strat = p.get("strategy", TARGET_STRATEGY)
+                open_ts = p.get("opened_at", 0)
+                open_sec = open_ts / 1000.0 if open_ts > 1e12 else float(open_ts)
+                age_sec = max(0, time.time() - open_sec) if open_sec > 0 else 999999
+
+                is_fresh_trade = age_sec <= 900  # Posisi baru dibuka dalam 15 menit terakhir
+
+                if (AUTO_SYNC_PAST_TRADES or is_fresh_trade) and sym not in db_symbols and sym not in mt5_symbols:
+                    log.info(
+                        "🔍 REKONSILIASI: Menemukan posisi aktif '%s' (%s - %s, usia: %.0fs) di Strategy Arena. Menyinkronkan ke MT5...",
+                        sym, p.get("side"), strat, age_sec
+                    )
+                    sig_to_open = {
+                        "symbol": sym,
+                        "side": p.get("side", "LONG"),
+                        "action": f"OPEN_{p.get('side', 'LONG')}",
+                        "price": p.get("current_price"),
+                        "stop_loss": p.get("stop_loss"),
+                        "take_profit": p.get("take_profit"),
+                        "strategy": strat,
+                    }
+                    await execute_open_signal(sig_to_open, acc_info)
+                    db_symbols.add(sym)
+                    mt5_symbols.add(sym)
 
         except asyncio.CancelledError:
             break
