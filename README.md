@@ -2,31 +2,51 @@
 
 Program Copy-Trading otomatis profesional untuk menyalin sinyal dari **Strategy Arena** secara real-time ke akun **MetaTrader 5 Real (Headway)**.
 
-Khusus dikonfigurasi dan dioptimasi untuk menyalin strategi forex:
-> 🎯 **Target Strategi:** `ROC Momentum 12` (`roc_momentum`), `EMA Deviation` (`price_ema_dev`) & `Gap Fill Reversal` (`gap_fill`)  
-> 💰 **Modal Riil:** `$350.50 USD` (Batas Stop Equity: `$10.00 USD`)  
+Khusus dikonfigurasi dan dioptimasi untuk menyalin strategi kuantitatif forex & komoditas:
+> 🎯 **Target Strategi Aktif:** `ROC Momentum 12` (`roc_momentum`) & `Gap Fill Reversal` (`gap_fill`)  
+> 🔄 **Mode Pasar:** `FOREX` (28 Pair Forex & Logam Mulia / XAUUSD)  
 > 🏦 **Broker:** Headway (`Headway-Real` / `mt5.real.trade-hw.online`)  
-> 🔑 **Nomor Akun (Login):** `17607969`
+> 🔑 **Nomor Akun:** `17607969` (Mendukung Akun Cent & Standard)  
+> 🛡️ **Fitur Hedging Multi-Strategi:** Aktif (`ALLOW_HEDGING=true`)  
+> 🤖 **Telegram Remote Control:** Mendukung command `/my-posisi`, `/posisi`, `/status`, dan `/help`  
 
 ---
 
 ## 📋 Fitur Utama & Proteksi Modal
 
-1. **Sub-Millisecond Multi-Strategi (WebSocket + REST Sync Watchdog)**:
-   - Terhubung langsung ke WebSocket feed Strategy Arena (`ws://.../ws/signals?strategy=roc_momentum,price_ema_dev,gap_fill&mode=forex`).
-   - Mendukung eksekusi multi-strategi secara simultan dengan alokasi lot dan perlindungan margin independen.
-   - Dilengkapi sistem rekonsiliasi audit berkala (setiap 10 detik) via REST API untuk menjamin **tidak ada order atau penutupan posisi yang terlewat**.
-2. **Manajemen Resiko Ketat**:
-   - **Ukuran Lot Aman:** Default menggunakan mikro lot **`0.01` lot** per trade.
-   - **Batas Maksimal Posisi:** Maksimal **3 posisi simultan** untuk menjaga margin aman.
-   - **Mandatory Hard Stop Loss:** Setiap order wajib memiliki Stop Loss terpasang langsung di server broker MT5.
-   - **Circuit Breaker Harian:** Jika total rugi terealisasi dalam 1 hari mencapai **`-$50.00 USD`**, bot otomatis menolak membuka order baru.
-   - **Emergency Equity Floor ($10 USD):** Bot otomatis menghentikan transaksi dan menutup seluruh posisi jika equity menyentuh atau turun ke **`$10.00 USD`**.
-3. **Dedicated MT5 Container + Web noVNC (Browser View)**:
-   - Menjalankan terminal MT5 Headway-Real secara mandiri dan terisolasi di dalam container Docker.
-   - Anda dapat melihat tampilan grafik, saldo riil, dan posisi floating MT5 secara langsung di browser Anda melalui **port 3002** (`http://<ip-server>:3002/`).
-4. **Notifikasi Telegram Instan (Opsional)**:
-   - Menerima notifikasi langsung ke smartphone Anda setiap kali order dibuka atau ditutup, lengkap dengan PnL dan harga eksekusi.
+### 1. Eksekusi Sub-Milidetik Multi-Strategi & Hedging Cerdas
+- **WebSocket Feed Instan**: Terhubung langsung ke WebSocket stream Strategy Arena (`ws://.../ws/signals?strategy=roc_momentum,gap_fill&mode=forex`).
+- **Multi-Strategy Hedging (`ALLOW_HEDGING=true`)**:
+  - Mengizinkan strategi yang berbeda membuka posisi berlawanan pada pair yang sama tanpa konflik (contoh: `roc_momentum` membuka **SHORT XAUUSD**, sedangkan `gap_fill` membuka **LONG XAUUSD**).
+  - Terminal MT5 Headway mengeksekusi kedua order secara independen dengan nomor tiket terpisah.
+  - Sinyal penutupan (CLOSE) dipetakan spesifik berdasarkan pasangan `(strategy_id, symbol)`, sehingga exit dari satu strategi tidak akan menutup posisi milik strategi lain.
+- **Smart Fresh-Trade Reconciliation**:
+  - Saat bot pertama kali dijalankan atau setelah rekoneksi WebSocket, sistem *watchdog* secara otomatis memindai trade aktif di Strategy Arena yang berumur $\le$ 900 detik (15 menit).
+  - Trade yang belum ada di MT5 akan disinkronkan dan dieksekusi seketika, mencegah hilangnya momentum sinyal akibat restart jaringan atau server.
+
+### 2. Remote Bot Telegram Interaktif
+Bot dilengkapi antarmuka Telegram dua arah (notifikasi otomatis + command interaktif):
+- **Notifikasi Real-Time**: Menerima laporan instan setiap pembukaan order, penutupan posisi, level SL/TP, floating profit, dan waktu open terstandarisasi dalam format **WIB (Asia/Jakarta)**.
+- **Daftar Perintah Telegram**:
+  | Perintah | Fungsi |
+  | :--- | :--- |
+  | `/my-posisi` (atau `/my_posisi`) | Menampilkan seluruh posisi riil yang sedang terbuka di MT5 beserta nomor tiket, lot, floating profit/loss, dan waktu open WIB. |
+  | `/posisi` | Menampilkan posisi aktif semua strategi yang sedang dipantau di Strategy Arena. |
+  | `/posisi <nama_strategi>` | Menampilkan posisi aktif strategi tertentu (contoh: `/posisi roc_momentum` atau `/posisi gap_fill`). |
+  | `/status` | Menampilkan saldo akun broker MT5, equity, margin bebas, status Algo Trading, dan ringkasan posisi aktif. |
+  | `/help` | Menampilkan panduan bantuan perintah bot. |
+
+### 3. Manajemen Risiko & Proteksi Saldo
+- **Ukuran Lot Aman:** Default micro-lot **`0.01` lot** per posisi.
+- **Batas Emergency Stop Terkonfigurasi:** Parameter `MIN_EQUITY_USD` dapat diatur ke `0` (trading hingga batas margin/saldo akun cent) atau nominal tertentu sebagai batas proteksi modal.
+- **Hard Stop Loss Terpasang:** Setiap transaksi wajib memasang Stop Loss langsung di level server broker MT5 untuk mengantisipasi lonjakan spread atau slippage ekstrem.
+- **Circuit Breaker Harian:** Bot menolak order baru jika batas kerugian harian (`MAX_DAILY_LOSS_USD`) tercapai.
+- **Magic Number Terisolasi (`889901`):** Bot hanya mengelola posisi miliknya sendiri, aman jika Anda membuka order manual lain di terminal yang sama.
+
+### 4. Dedicated MT5 Container + Web noVNC (Browser View)
+- Terminal MetaTrader 5 resmi berjalan terisolasi di dalam container Docker.
+- Anda dapat memantau grafik live, saldo, dan posisi floating langsung melalui browser pada **port 3002**:
+  👉 **`http://<IP_SERVER>:3002/`**
 
 ---
 
@@ -35,95 +55,73 @@ Khusus dikonfigurasi dan dioptimasi untuk menyalin strategi forex:
 ```text
 /var/www/sa-copytrade/
 ├── .env.example              # Template konfigurasi environment
-├── .env                      # File konfigurasi utama (isi password di sini)
-├── docker-compose.yml        # Konfigurasi container MT5 Real + Bot Daemon
-├── Dockerfile                # Image container Python bot
-├── requirements.txt          # Library Python (rpyc, aiohttp, websockets, dll.)
-├── config.py                 # Modul pemuat konfigurasi & logger
-├── mt5_client.py             # Client interaksi MetaTrader 5 via RPyC
-├── risk_manager.py           # Logika perhitungan lot & circuit breaker
-├── trade_storage.py          # Database SQLite penyimpan riwayat transaksi
-├── copytrade_bot.py          # Daemon bot copy-trading utama
-├── cli.py                    # Tool baris perintah interaktif (status, history, dsb.)
+├── .env                      # File konfigurasi aktif (kredensial broker & Telegram)
+├── docker-compose.yml        # Definisi service Docker MT5 Real + Python Bot Daemon
+├── Dockerfile                # Image container Python runtime
+├── requirements.txt          # Library dependencies (rpyc, aiohttp, websockets, python-dotenv)
+├── config.py                 # Pemuat konfigurasi environment terintegrasi
+├── mt5_client.py             # Client interaksi MetaTrader 5 via bridge RPyC
+├── risk_manager.py           # Logika validasi margin, lot sizing, & hedging filter
+├── trade_storage.py          # Database SQLite penyimpan tiket & status order
+├── copytrade_bot.py          # Daemon bot utama (WebSocket, Watchdog, & Telegram Bot)
+├── cli.py                    # Tool baris perintah interaktif (status, history, close-all)
 ├── run.sh                    # Skrip kontrol cepat satu-perintah
 ├── data/                     # Database lokal SQLite (copytrade.db)
-└── logs/                     # Log harian bot transaksi (copytrade.log)
+└── logs/                     # Log aktivitas transaksi (copytrade.log)
 ```
 
 ---
 
-## ⚡ Panduan Memulai Cepat (Quick Start)
+## ⚙️ Variabel Konfigurasi (`.env`)
 
-### 1. Masukkan Password Akun Headway
-Buka file `.env` di folder ini dan masukkan kata sandi akun Headway Anda:
-```bash
-nano /var/www/sa-copytrade/.env
-```
-Cari baris:
 ```ini
-MT5_PASSWORD=MASUKKAN_PASSWORD_DISINI
-```
-Ganti `MASUKKAN_PASSWORD_DISINI` dengan kata sandi akun Headway Anda (`17607969`), lalu simpan (`Ctrl+O`, `Enter`, `Ctrl+X`).
+# --- Strategy Arena Feed ---
+ARENA_HOST=172.24.30.4:8080
+ARENA_PUBLIC_KEY=pk_live_strategyarena_public_feed
+ARENA_MARKET_MODE=forex
 
-### 2. Jalankan Copy-Trade Engine
-Cukup jalankan satu perintah berikut:
-```bash
-cd /var/www/sa-copytrade
-./run.sh start
+# --- Target Strategi ---
+TARGET_STRATEGIES=roc_momentum,gap_fill
+
+# --- Fitur Hedging & Sinkronisasi ---
+ALLOW_HEDGING=true
+AUTO_SYNC_PAST_TRADES=true
+
+# --- Manajemen Risiko ---
+LOT_SIZE=0.01
+MAX_OPEN_POSITIONS=5
+MAX_DAILY_LOSS_USD=50.0
+MIN_EQUITY_USD=0.0
+
+# --- Kredensial Broker MetaTrader 5 ---
+MT5_LOGIN=17607969
+MT5_PASSWORD=******
+MT5_SERVER=Headway-Real
+
+# --- Notifikasi & Remote Control Telegram ---
+TELEGRAM_BOT_TOKEN=8427773229:AAH...
+TELEGRAM_CHAT_ID=6058983995
 ```
-Perintah ini akan secara otomatis:
-- Membangun container Docker untuk Python Bot.
-- Mengaktifkan terminal MetaTrader 5 untuk broker Headway Real.
-- Menginisialisasi koneksi sinyal ke Strategy Arena.
 
 ---
 
-## 🖥️ Melihat Tampilan MT5 Langsung di Browser
-
-Anda tidak perlu menginstal aplikasi MetaTrader 5 di laptop Anda untuk memantau akun. Cukup buka browser dan akses:
-
-👉 **`http://<IP_SERVER_ANDA>:3002/`**
-
-Tampilan grafis terminal MT5 resmi akan langsung terbuka di browser dengan grafik live, tab trade, saldo $1,000 Anda, dan posisi yang dieksekusi oleh bot.
-
----
-
-## 🛠️ Perintah Kontrol (`./run.sh`)
+## ⚡ Panduan Operasional (`./run.sh`)
 
 | Perintah | Deskripsi |
 | :--- | :--- |
-| `./run.sh start` | Menjalankan seluruh sistem copy-trade di background |
+| `./run.sh start` | Menjalankan terminal MT5 dan daemon bot di latar belakang |
 | `./run.sh stop` | Menghentikan sistem copy-trade secara aman |
-| `./run.sh restart` | Me-restart container MT5 dan bot |
+| `./run.sh restart` | Memuat ulang seluruh container dan konfigurasi |
 | `./run.sh status` | Menampilkan status container, saldo akun MT5, dan posisi aktif |
 | `./run.sh logs` | Menampilkan live log aktivitas bot transaksi |
-| `./run.sh logs-mt5` | Menampilkan log internal MetaTrader 5 terminal |
-| `./run.sh gui` | Menampilkan tautan URL browser untuk melihat tampilan MT5 |
-| `./run.sh cli status` | Menampilkan tabel rapi status akun dan posisi terbuka |
-| `./run.sh cli history` | Menampilkan riwayat transaksi yang sudah ditutup beserta PnL |
-| `./run.sh cli test-signal` | Menguji ketersediaan sinyal strategi 'Gap Fill Reversal' |
+| `./run.sh logs-mt5` | Menampilkan log terminal internal MetaTrader 5 |
+| `./run.sh gui` | Menampilkan tautan URL browser noVNC MT5 |
+| `./run.sh cli status` | Menampilkan tabel status akun dan posisi terbuka di konsol |
+| `./run.sh cli history` | Menampilkan riwayat transaksi yang telah ditutup beserta PnL |
 | `./run.sh cli close-all` | **Tutup Darurat**: Menutup seluruh posisi aktif bot di MT5 |
 
 ---
 
-## 📱 Mengaktifkan Notifikasi Telegram (Opsional)
-
-Jika ingin menerima notifikasi real-time di Telegram saat bot membuka atau menutup order:
-1. Dapatkan **Bot Token** dari `@BotFather` di Telegram.
-2. Dapatkan **Chat ID** Anda dari `@userinfobot`.
-3. Buka `.env` dan masukkan:
-   ```ini
-   TELEGRAM_BOT_TOKEN=123456789:ABCDefghIJKLmnop...
-   TELEGRAM_CHAT_ID=123456789
-   ```
-4. Restart bot:
-   ```bash
-   ./run.sh restart
-   ```
-
----
-
 ## 🛡️ Catatan Keamanan
-- File `.env` berisi data login broker Anda. File ini telah diproteksi dan dikecualikan dari repositori publik.
-- Magic Number unik `889901` disematkan pada setiap order, sehingga bot **hanya mengelola order miliknya sendiri** dan tidak akan mengganggu order manual lain yang Anda buka di terminal yang sama.
-
+- Kredensial akun MT5 dan token Telegram tersimpan secara privat di file `.env` lokal dan dikecualikan dari repositori Git (`.gitignore`).
+- Semua koneksi sinyal diverifikasi melalui public key Strategy Arena dengan protokol fail-safe otomatis.
