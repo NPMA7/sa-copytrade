@@ -106,14 +106,20 @@ def get_open_position_by_symbol(symbol: str) -> Optional[dict]:
         return dict(row) if row else None
 
 
-def get_open_position_by_strategy_symbol(strategy: str, symbol: str) -> Optional[dict]:
-    """Mencari posisi terbuka berdasarkan strategi dan simbol pair."""
+def get_open_position_by_strategy_symbol(strategy: str, symbol: str, side: Optional[str] = None) -> Optional[dict]:
+    """Mencari posisi terbuka berdasarkan strategi dan simbol pair (serta arah side jika diberikan)."""
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT * FROM trades WHERE strategy = ? AND symbol = ? AND status = 'OPEN' ORDER BY id DESC LIMIT 1",
-            (strategy, symbol),
-        )
+        if side:
+            cur.execute(
+                "SELECT * FROM trades WHERE strategy = ? AND symbol = ? AND side = ? AND status = 'OPEN' ORDER BY id DESC LIMIT 1",
+                (strategy, symbol, side.upper()),
+            )
+        else:
+            cur.execute(
+                "SELECT * FROM trades WHERE strategy = ? AND symbol = ? AND status = 'OPEN' ORDER BY id DESC LIMIT 1",
+                (strategy, symbol),
+            )
         row = cur.fetchone()
         return dict(row) if row else None
 

@@ -537,6 +537,7 @@ async def execute_close_signal(sig: dict, acc_info: dict) -> None:
     symbol = sig.get("symbol", "").upper()
     action = sig.get("action", "CLOSE_SIGNAL")
     strategy_id = sig.get("strategy")
+    side = sig.get("side", "").upper()
 
     # Filter jika strategi disebutkan dan bukan salah satu target strategi
     if strategy_id and strategy_id not in TARGET_STRATEGIES_SET:
@@ -544,9 +545,11 @@ async def execute_close_signal(sig: dict, acc_info: dict) -> None:
 
     # Cari posisi di database
     db_pos = None
-    if strategy_id and ALLOW_HEDGING:
-        db_pos = trade_storage.get_open_position_by_strategy_symbol(strategy_id, symbol)
-    if not db_pos:
+    if strategy_id:
+        # Jika ada strategy_id spesifik, WAJIB hanya mencari posisi milik strategi tersebut!
+        db_pos = trade_storage.get_open_position_by_strategy_symbol(strategy_id, symbol, side=side if side else None)
+    elif not ALLOW_HEDGING:
+        # Hanya boleh mencari generic symbol jika HEDGING dimatikan dan tidak ada strategy_id spesifik
         db_pos = trade_storage.get_open_position_by_symbol(symbol)
 
     ticket_to_close = None
@@ -558,14 +561,21 @@ async def execute_close_signal(sig: dict, acc_info: dict) -> None:
         open_positions = mt5.get_open_positions(MT5_MAGIC_NUMBER)
         for p in open_positions:
             if symbol == p.get("symbol"):
-                if strategy_id and p.get("comment") == f"SA:{strategy_id}":
+                # Jika strategy_id diketahui, WAJIB mencocokkan komentar MT5 (SA:<strategy_id>)
+                if strategy_id:
+                    if p.get("comment") == f"SA:{strategy_id}":
+                        if side and p.get("side", "").upper() != side:
+                            continue
+                        ticket_to_close = p["ticket"]
+                        break
+                elif not ALLOW_HEDGING:
                     ticket_to_close = p["ticket"]
                     break
-                elif not ticket_to_close:
-                    ticket_to_close = p["ticket"]
 
     if not ticket_to_close:
-        log.info("ℹ️ Sinyal tutup %s diterima, tetapi tidak ada posisi terbuka untuk %s.", action, symbol)
+        strat_lbl = f"[{strategy_id}] " if strategy_id else ""
+        log.info("ℹ️ Sinyal tutup %s diterima untuk %s%s, tetapi tidak ada posisi aktif yang cocok (sudah tertutup broker SL/TP). Posisi strategi lain TIDAK disentuh.",
+                 action, strat_lbl, symbol)
         return
 
     strat_title = STRATEGY_NAMES_MAP.get(strategy_id, strategy_id) if strategy_id else TARGET_STRATEGY_NAME
@@ -651,25 +661,15 @@ async def poll_reconciliation_task() -> None:
             arena_strat_symbols = {(p["symbol"].upper(), p.get("strategy")) for p in arena_positions}
             arena_symbols = {p["symbol"].upper() for p in arena_positions}
 
-            # 2. Ambil posisi yang masih kita catat OPEN di database
+            # 2. Ambil posisi yang masih kita catat OPEN di database & posisi aktif di MT5
             db_open_positions = trade_storage.get_all_open_positions()
-
-            # 3. Jika di Strategy Arena posisi sudah tutup tapi di bot masih buka -> TUTUP!
-            for pos in db_open_positions:
-                sym = pos["symbol"].upper()
-                strat = pos.get("strategy")
-                if (strat and (sym, strat) not in arena_strat_symbols) or (not strat and sym not in arena_symbols):
-                    log.info("🔍 REKONSILIASI: Posisi %s (%s) sudah ditutup di Strategy Arena. Menutup di MT5...", sym, strat or "all")
-                    await execute_close_signal({"symbol": sym, "strategy": strat, "action": "SYNC_CLOSE"}, acc_info)
-
-            # 4. Cek apakah posisi MT5 ditutup oleh broker (misal hit hard SL/TP)
             mt5_active = mt5.get_open_positions(MT5_MAGIC_NUMBER)
             active_tickets = {p["ticket"] for p in mt5_active}
 
+            # 3. Cek apakah ada posisi MT5 yang sudah ditutup langsung oleh broker (misal hit hard SL/TP)
             for pos in db_open_positions:
                 if pos["ticket"] not in active_tickets:
-                    # Posisi sudah tidak ada di MT5 -> Catat sebagai CLOSED oleh broker SL/TP
-                    log.info("🔍 REKONSILIASI: Ticket #%s (%s) telah ditutup di MT5 (Hit SL/TP).", pos["ticket"], pos["symbol"])
+                    log.info("🔍 REKONSILIASI: Ticket #%s (%s - %s) telah ditutup di MT5 (Hit SL/TP).", pos["ticket"], pos["symbol"], pos.get("strategy"))
                     trade_storage.record_close(
                         ticket=pos["ticket"],
                         close_price=pos["open_price"],
@@ -677,13 +677,39 @@ async def poll_reconciliation_task() -> None:
                         close_reason="BROKER_SL_TP",
                     )
 
-            # 5. Sinkronisasi posisi terbuka Strategy Arena yang belum ada di MT5
+            # Re-fetch setelah update status broker
+            db_open_positions = trade_storage.get_all_open_positions()
+
+            # 4. Jika di Strategy Arena posisi sudah tutup tapi di bot masih buka -> TUTUP posisi strategi tersebut!
+            for pos in db_open_positions:
+                sym = pos["symbol"].upper()
+                strat = pos.get("strategy")
+                side = pos.get("side", "").upper()
+                if (strat and (sym, strat) not in arena_strat_symbols) or (not strat and sym not in arena_symbols):
+                    log.info("🔍 REKONSILIASI: Posisi %s (%s) sudah ditutup di Strategy Arena. Menutup di MT5...", sym, strat or "all")
+                    await execute_close_signal({"symbol": sym, "strategy": strat, "side": side, "action": "SYNC_CLOSE"}, acc_info)
+
+            # 5. Re-refresh posisi terbuka setelah langkah penutupan sebelum menyinkronkan posisi baru
+            db_open_positions = trade_storage.get_all_open_positions()
+            mt5_active = mt5.get_open_positions(MT5_MAGIC_NUMBER)
+
+            # 6. Sinkronisasi posisi terbuka Strategy Arena yang belum ada di MT5
             # Tangkap posisi jika:
             # a) AUTO_SYNC_PAST_TRADES = True, ATAU
             # b) Posisi baru saja dibuka (usia <= 15 menit) yang terlewat saat restart server atau reconnect WebSocket
             if ALLOW_HEDGING:
                 active_keys = {(p.get("strategy", "").lower(), p.get("symbol", "").upper()) for p in db_open_positions}
-                mt5_keys = {(p.get("comment", "").replace("SA:", "").lower(), p.get("symbol", "").upper()) for p in mt5_active}
+                mt5_keys = set()
+                db_ticket_map = {p["ticket"]: p for p in db_open_positions}
+                for p in mt5_active:
+                    sym = p.get("symbol", "").upper()
+                    strat = ""
+                    if p["ticket"] in db_ticket_map:
+                        strat = db_ticket_map[p["ticket"]].get("strategy", "")
+                    if not strat:
+                        strat = p.get("comment", "").replace("SA:", "")
+                    if strat:
+                        mt5_keys.add((strat.lower(), sym))
             else:
                 db_symbols = {p["symbol"].upper() for p in db_open_positions}
                 mt5_symbols = {p["symbol"].upper() for p in mt5_active}
