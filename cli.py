@@ -41,7 +41,8 @@ def show_status():
 
     table.add_row("Target Strategi", f"{TARGET_STRATEGY_NAME} (`{', '.join(TARGET_STRATEGIES)}`)")
     table.add_row("Mode Pasar", TARGET_MODE.upper())
-    table.add_row("Emergency Equity Stop", f"${MIN_EQUITY_USD:,.2f}")
+    stop_text = f"${MIN_EQUITY_USD:,.2f}" if MIN_EQUITY_USD > 0 else "$0.00 (Trading sampai saldo habis)"
+    table.add_row("Emergency Equity Stop", stop_text)
     table.add_row("Login MT5", str(MT5_LOGIN))
     table.add_row("Server Broker", MT5_SERVER)
     table.add_row("MT5 Terminal Host", f"{MT5_HOST}:{MT5_PORT}")

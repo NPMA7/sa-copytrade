@@ -398,7 +398,8 @@ async def main() -> None:
     log.info("STRATEGY ARENA COPY-TRADING ENGINE v1.1 (Multi-Strategy)")
     log.info("Target Strategi : %s (%s)", TARGET_STRATEGY_NAME, ", ".join(TARGET_STRATEGIES))
     log.info("Mode Pasar      : %s", TARGET_MODE)
-    log.info("Emergency Stop  : Equity <= $%.2f USD", MIN_EQUITY_USD)
+    stop_desc = f"Equity <= ${MIN_EQUITY_USD:.2f} USD" if MIN_EQUITY_USD > 0 else "0 (Trading sampai saldo habis)"
+    log.info("Emergency Stop  : %s", stop_desc)
     log.info("Akun MT5        : %s | Server: %s", mt5.host, mt5.port)
     log.info("=" * 70)
 
