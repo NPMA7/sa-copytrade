@@ -16,6 +16,7 @@ from config import (
     MT5_ORDER_COMMENT,
     log,
 )
+from formatters import format_price
 
 
 class MT5Client:
@@ -283,8 +284,8 @@ def _send_open_order(sym, order_type, vol, price, sl, tp, magic, comment):
                 ticket = res["ticket"]
                 fill_price = res.get("price") or price
                 log.info(
-                    "🚀 EKSEKUSI MT5 SUKSES! Ticket #%s | %s %s %.2f lot @ %.5f | SL: %.5f | TP: %.5f",
-                    ticket, side, broker_sym, lot, fill_price, sl or 0.0, tp or 0.0
+                    "🚀 EKSEKUSI MT5 SUKSES! Ticket #%s | %s %s %.2f lot @ %s | SL: %s | TP: %s",
+                    ticket, side, broker_sym, lot, format_price(fill_price, broker_sym), format_price(sl or 0.0, broker_sym), format_price(tp or 0.0, broker_sym)
                 )
                 return True, ticket, fill_price, "SUCCESS"
             else:
@@ -419,10 +420,10 @@ def _send_close_order(t, comment):
                 profit = res.get("profit", 0.0)
                 deal_cm = res.get("comment", "")
                 if res.get("already_closed"):
-                    log.info("🏁 POSISI TELAH DITUTUP BROKER (SL/TP)! Ticket #%s @ %.5f | Profit: $%.2f | Catatan: %s",
-                             ticket, close_price, profit, deal_cm)
+                    log.info("🏁 POSISI TELAH DITUTUP BROKER (SL/TP)! Ticket #%s @ %s | Profit: $%.2f | Catatan: %s",
+                             ticket, format_price(close_price, broker_sym), profit, deal_cm)
                 else:
-                    log.info("🏁 POSISI DITUTUP MT5! Ticket #%s @ %.5f | Profit: $%.2f", ticket, close_price, profit)
+                    log.info("🏁 POSISI DITUTUP MT5! Ticket #%s @ %s | Profit: $%.2f", ticket, format_price(close_price, broker_sym), profit)
                 return True, close_price, profit, deal_cm or "SUCCESS"
             else:
                 err_msg = res.get("error", "Gagal menutup posisi di MT5")

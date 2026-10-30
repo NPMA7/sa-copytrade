@@ -26,6 +26,7 @@ from config import (
 )
 from mt5_client import MT5Client
 import trade_storage
+from formatters import format_price
 
 console = Console()
 
@@ -79,15 +80,16 @@ def show_status():
 
         for p in open_pos:
             prof_color = "green" if p['profit'] >= 0 else "red"
+            sym = p.get('symbol', '')
             pos_table.add_row(
                 str(p['ticket']),
-                p['symbol'],
+                sym,
                 p['side'],
                 f"{p['volume']:.2f}",
-                f"{p['price_open']:.5f}",
-                f"{p['price_current']:.5f}",
-                f"{p['sl']:.5f}" if p['sl'] else "-",
-                f"{p['tp']:.5f}" if p['tp'] else "-",
+                format_price(p['price_open'], sym),
+                format_price(p['price_current'], sym),
+                format_price(p['sl'], sym) if p['sl'] else "-",
+                format_price(p['tp'], sym) if p['tp'] else "-",
                 f"[{prof_color}]${p['profit']:+,.2f}[/{prof_color}]"
             )
         console.print(pos_table)
@@ -141,13 +143,14 @@ def show_history(limit=15):
 
     for t in trades:
         prof_color = "green" if t['pnl'] >= 0 else "red"
+        sym = t.get('symbol', '')
         table.add_row(
             str(t['ticket']),
-            t['symbol'],
+            sym,
             t['side'],
             f"{t['lot']:.2f}",
-            f"{t['open_price']:.5f}",
-            f"{t['close_price']:.5f}" if t['close_price'] else "-",
+            format_price(t['open_price'], sym),
+            format_price(t['close_price'], sym) if t['close_price'] else "-",
             f"[{prof_color}]${t['pnl']:+,.2f}[/{prof_color}]",
             t['close_reason'] or "SIGNAL"
         )
@@ -170,7 +173,7 @@ def close_all():
     for p in open_pos:
         ok, price, prof, err = mt5.close_position(p['ticket'], comment="SA:EMERGENCY_CLOSE")
         if ok:
-            console.print(f"✓ Ditutup Ticket #{p['ticket']} ({p['symbol']}) @ {price:.5f} | PnL: ${prof:+.2f}")
+            console.print(f"✓ Ditutup Ticket #{p['ticket']} ({p['symbol']}) @ {format_price(price, p['symbol'])} | PnL: ${prof:+.2f}")
             trade_storage.record_close(p['ticket'], price, prof, "EMERGENCY_CLOSE")
         else:
             console.print(f"✗ Gagal menutup Ticket #{p['ticket']}: {err}")

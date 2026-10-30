@@ -37,6 +37,7 @@ from config import (
 from mt5_client import MT5Client
 from risk_manager import RiskManager
 import trade_storage
+from formatters import format_price
 
 # Global state
 running = True
@@ -163,9 +164,9 @@ async def handle_posisi_command(arg: str, chat_id: str) -> None:
                 dt_wib = datetime.datetime.fromtimestamp(ts_sec, tz=datetime.timezone(datetime.timedelta(hours=7)))
                 lines.append(f"  ├ Waktu Open: <code>{dt_wib.strftime('%H:%M:%S')} WIB</code>")
 
-            lines.append(f"  ├ Entry Sinyal: <code>{entry_px:.5f}</code> | Kini: <code>{cur_px:.5f}</code>")
+            lines.append(f"  ├ Entry Sinyal: <code>{format_price(entry_px, sym)}</code> | Kini: <code>{format_price(cur_px, sym)}</code>")
             if sl and tp:
-                lines.append(f"  ├ SL: <code>{float(sl):.5f}</code> | TP: <code>{float(tp):.5f}</code>")
+                lines.append(f"  ├ SL: <code>{format_price(sl, sym)}</code> | TP: <code>{format_price(tp, sym)}</code>")
             lines.append(f"  ├ Floating Arena: <code>{pnl_usd:+.2f} USD</code>")
 
             # Cek status di MT5 Real kita yang spesifik untuk strategi ini
@@ -250,15 +251,13 @@ async def handle_my_posisi_command(chat_id: str) -> None:
         profit_str = f"+${profit:.2f}" if profit >= 0 else f"-${abs(profit):.2f}"
         profit_emoji = "🟢" if profit >= 0 else "🔴"
 
-        digits = 2 if ("XAU" in sym or "JPY" in sym) else 5
-
         lines.append(f"• <b>{sym}</b> [{side_badge}] <code>#{ticket}</code>")
         lines.append(f"  ├ Waktu Open: <code>{time_str}</code>")
         lines.append(f"  ├ Lot: <code>{vol:.2f} Lot</code>")
-        lines.append(f"  ├ Entry: <code>{px_open:.{digits}f}</code> | Kini: <code>{px_cur:.{digits}f}</code>")
+        lines.append(f"  ├ Entry: <code>{format_price(px_open, sym)}</code> | Kini: <code>{format_price(px_cur, sym)}</code>")
         if sl > 0 or tp > 0:
-            sl_s = f"{sl:.{digits}f}" if sl > 0 else "—"
-            tp_s = f"{tp:.{digits}f}" if tp > 0 else "—"
+            sl_s = format_price(sl, sym) if sl > 0 else "—"
+            tp_s = format_price(tp, sym) if tp > 0 else "—"
             lines.append(f"  ├ SL: <code>{sl_s}</code> | TP: <code>{tp_s}</code>")
         lines.append(f"  ├ Floating PnL: {profit_emoji} <b>{profit_str}</b>")
         if comment:
@@ -491,8 +490,8 @@ async def execute_open_signal(sig: dict, acc_info: dict) -> None:
 
     strat_title = STRATEGY_NAMES_MAP.get(strategy_id, strategy_id)
     log.info(
-        "⚡ MEMPROSES SINYAL: [%s] %s %s | Lot: %.2f | Entry Est: %.5f | SL: %.5f | TP: %.5f",
-        strat_title, action, symbol, lot, entry_price, sl, tp
+        "⚡ MEMPROSES SINYAL: [%s] %s %s | Lot: %.2f | Entry Est: %s | SL: %s | TP: %s",
+        strat_title, action, symbol, lot, format_price(entry_price, symbol), format_price(sl, symbol), format_price(tp, symbol)
     )
 
     # 4. Eksekusi order ke broker 
@@ -521,9 +520,9 @@ async def execute_open_signal(sig: dict, acc_info: dict) -> None:
             f"• Strategi: `{strat_title}` (`{strategy_id}`)\n"
             f"• Simbol: `{symbol}` ({side})\n"
             f"• Lot: `{lot}`\n"
-            f"• Harga Fill: `{fill_price:.5f}`\n"
-            f"• Stop Loss: `{sl:.5f}`\n"
-            f"• Take Profit: `{tp:.5f}`\n"
+            f"• Harga Fill: `{format_price(fill_price, symbol)}`\n"
+            f"• Stop Loss: `{format_price(sl, symbol)}`\n"
+            f"• Take Profit: `{format_price(tp, symbol)}`\n"
             f"• Tiket MT5: `#{ticket}`\n"
             f"• Equity Akun: `${equity:.2f}`"
         )
@@ -609,7 +608,7 @@ async def execute_close_signal(sig: dict, acc_info: dict) -> None:
             f"{pnl_symbol} *SA COPY-TRADE: POSISI DITUTUP*\n"
             f"• Strategi: `{strat_title}`\n"
             f"• Simbol: `{symbol}`\n"
-            f"• Harga Tutup: `{close_price:.5f}`\n"
+            f"• Harga Tutup: `{format_price(close_price, symbol)}`\n"
             f"• Realized PnL: *${profit:+.2f}*\n"
             f"• Alasan: `{close_reason}`\n"
             f"• Tiket: `#{ticket_to_close}`"
@@ -713,7 +712,7 @@ async def poll_reconciliation_task() -> None:
                         f"{pnl_symbol} *SA COPY-TRADE: POSISI DITUTUP (BROKER SL/TP)*\n"
                         f"• Strategi: `{strat_title}`\n"
                         f"• Simbol: `{sym}`\n"
-                        f"• Harga Tutup: `{close_price:.5f}`\n"
+                        f"• Harga Tutup: `{format_price(close_price, sym)}`\n"
                         f"• Realized PnL: *${profit:+.2f}*\n"
                         f"• Alasan: `{close_reason}`\n"
                         f"• Tiket: `#{ticket_num}`"

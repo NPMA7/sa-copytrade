@@ -6,6 +6,7 @@ import sqlite3
 import time
 from typing import Optional
 from config import DATA_DIR, log
+from formatters import format_price
 
 DB_PATH = DATA_DIR / "copytrade.db"
 
@@ -71,7 +72,7 @@ def record_open(
             (ticket, strategy, symbol, side, lot, open_price, sl, tp, time.time()),
         )
         conn.commit()
-    log.info("💾 Posisi tercatat di database: Ticket #%s %s %s @ %.5f", ticket, side, symbol, open_price)
+    log.info("💾 Posisi tercatat di database: Ticket #%s %s %s @ %s", ticket, side, symbol, format_price(open_price, symbol))
 
 
 def record_close(
