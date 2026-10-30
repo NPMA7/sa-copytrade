@@ -37,7 +37,11 @@ Bot dilengkapi antarmuka Telegram dua arah (notifikasi otomatis + command intera
   | `/help` | Menampilkan panduan bantuan perintah bot. |
 
 ### 3. Manajemen Risiko & Proteksi Saldo
-- **Ukuran Lot Aman:** Default micro-lot **`0.01` lot** per posisi.
+- **Mode Ukuran Lot Fleksibel & Dinamis (`LOT_SIZING_MODE`):**
+  - `PROPORTIONAL` *(Default & Rekomendasi)*: Mengikuti ukuran lot dari kalkulasi risiko strategi di Strategy Arena (1:1, misal 0.05 lot untuk Oil/XTIUSD, 0.01 lot untuk Gold/XAUUSD, 0.03-0.04 lot untuk Forex), dibatasi dengan aman dalam rentang `BASE_LOT` (minimum) hingga `MAX_LOT` (maksimum).
+  - `FIXED`: Selalu mengeksekusi order dengan ukuran `BASE_LOT` secara konstan (default `0.01` lot).
+  - `EQUITY_SCALE`: Menyesuaikan ukuran lot sinyal secara proporsional terhadap rasio ekuitas akun (`equity / $1,000`).
+- **Batas Lot Terkonfigurasi:** Parameter `BASE_LOT=0.01` (lot minimum) dan `MAX_LOT=0.05` (lot plafon tertinggi yang diizinkan).
 - **Batas Emergency Stop Terkonfigurasi:** Parameter `MIN_EQUITY_USD` dapat diatur ke `0` (trading hingga batas margin/saldo akun cent) atau nominal tertentu sebagai batas proteksi modal.
 - **Hard Stop Loss Terpasang:** Setiap transaksi wajib memasang Stop Loss langsung di level server broker MT5 untuk mengantisipasi lonjakan spread atau slippage ekstrem.
 - **Circuit Breaker Harian:** Bot menolak order baru jika batas kerugian harian (`MAX_DAILY_LOSS_USD`) tercapai.
@@ -75,28 +79,37 @@ Bot dilengkapi antarmuka Telegram dua arah (notifikasi otomatis + command intera
 ## ⚙️ Variabel Konfigurasi (`.env`)
 
 ```ini
-# --- Strategy Arena Feed ---
-ARENA_HOST=172.24.30.4:8080
-ARENA_PUBLIC_KEY=pk_live_strategyarena_public_feed
-ARENA_MARKET_MODE=forex
+# --- Sumber Sinyal Strategy Arena ---
+ARENA_BASE_URL=http://172.17.0.1:8080
+ARENA_WS_URL=ws://172.17.0.1:8080/ws/signals
+ARENA_API_KEY=pk_live_strategyarena_public_feed
+TARGET_MODE=forex
 
 # --- Target Strategi ---
 TARGET_STRATEGIES=roc_momentum,gap_fill
+TARGET_STRATEGY_NAME="ROC Momentum 12 & Gap Fill Reversal"
 
 # --- Fitur Hedging & Sinkronisasi ---
 ALLOW_HEDGING=true
 AUTO_SYNC_PAST_TRADES=true
 
-# --- Manajemen Risiko ---
-LOT_SIZE=0.01
-MAX_OPEN_POSITIONS=5
+# --- Manajemen Risiko & Ukuran Lot ---
+LOT_SIZING_MODE=PROPORTIONAL
+BASE_LOT=0.01
+MAX_LOT=0.05
+MAX_OPEN_POSITIONS=3
 MAX_DAILY_LOSS_USD=50.0
 MIN_EQUITY_USD=0.0
+ENFORCE_SL=true
+DEFAULT_SL_PIPS=35.0
+DEFAULT_TP_PIPS=70.0
 
 # --- Kredensial Broker MetaTrader 5 ---
 MT5_LOGIN=17607969
 MT5_PASSWORD=******
 MT5_SERVER=Headway-Real
+MT5_IP_SERVER=mt5.real.trade-hw.online:443
+MT5_MAGIC_NUMBER=889901
 
 # --- Notifikasi & Remote Control Telegram ---
 TELEGRAM_BOT_TOKEN=8427773229:AAH...
