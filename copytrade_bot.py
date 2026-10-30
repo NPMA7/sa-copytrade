@@ -5,6 +5,7 @@ Menyalin sinyal strategi terpilih (ROC Momentum 12 & EMA Deviation) secara real-
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import signal
 import sys
@@ -153,8 +154,14 @@ async def handle_posisi_command(arg: str, chat_id: str) -> None:
             sl = p.get("stop_loss")
             tp = p.get("take_profit")
             pnl_usd = float(p.get("unrealized_pnl_usd") or 0.0)
+            open_ts = p.get("opened_at")
 
             lines.append(f"• <b>{sym}</b> [{side_badge}]")
+            if open_ts:
+                ts_sec = open_ts / 1000.0 if open_ts > 1e12 else float(open_ts)
+                dt_wib = datetime.datetime.fromtimestamp(ts_sec, tz=datetime.timezone(datetime.timedelta(hours=7)))
+                lines.append(f"  ├ Waktu Open: <code>{dt_wib.strftime('%H:%M:%S')} WIB</code>")
+
             lines.append(f"  ├ Entry Sinyal: <code>{entry_px:.5f}</code> | Kini: <code>{cur_px:.5f}</code>")
             if sl and tp:
                 lines.append(f"  ├ SL: <code>{float(sl):.5f}</code> | TP: <code>{float(tp):.5f}</code>")
