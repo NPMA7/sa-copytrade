@@ -3,24 +3,25 @@
 Program Copy-Trading otomatis profesional untuk menyalin sinyal dari **Strategy Arena** secara real-time ke akun **MetaTrader 5 Real (Headway)**.
 
 Khusus dikonfigurasi dan dioptimasi untuk menyalin strategi forex:
-> 🎯 **Target Strategi:** `Gap Fill Reversal` (`gap_fill`)  
-> 💰 **Modal Awal Riil:** `$1,000.00 USD`  
+> 🎯 **Target Strategi:** `ROC Momentum 12` (`roc_momentum`) & `EMA Deviation` (`price_ema_dev`)  
+> 💰 **Modal Riil:** `$350.50 USD` (Batas Stop Equity: `$10.00 USD`)  
 > 🏦 **Broker:** Headway (`Headway-Real` / `mt5.real.trade-hw.online`)  
 > 🔑 **Nomor Akun (Login):** `17607969`
 
 ---
 
-## 📋 Fitur Utama & Proteksi Modal ($1,000 USD)
+## 📋 Fitur Utama & Proteksi Modal
 
-1. **Sub-Millisecond Dual Sinyal (WebSocket + REST Sync Watchdog)**:
-   - Terhubung langsung ke WebSocket feed Strategy Arena (`ws://.../ws/signals?strategy=gap_fill&mode=forex`).
-   - Dilengkapi sistem rekonsiliasi audit berkala (setiap 10 detik) via REST API untuk menjamin **tidak ada order atau penutupan posisi yang terlewat**, bahkan jika koneksi internet sempat terputus sesaat.
-2. **Manajemen Resiko Ketat (Tailored for $1,000 Capital)**:
+1. **Sub-Millisecond Multi-Strategi (WebSocket + REST Sync Watchdog)**:
+   - Terhubung langsung ke WebSocket feed Strategy Arena (`ws://.../ws/signals?strategy=roc_momentum,price_ema_dev&mode=forex`).
+   - Mendukung eksekusi multi-strategi secara simultan dengan alokasi lot dan perlindungan margin independen.
+   - Dilengkapi sistem rekonsiliasi audit berkala (setiap 10 detik) via REST API untuk menjamin **tidak ada order atau penutupan posisi yang terlewat**.
+2. **Manajemen Resiko Ketat**:
    - **Ukuran Lot Aman:** Default menggunakan mikro lot **`0.01` lot** per trade.
-   - **Batas Maksimal Posisi:** Maksimal **3 posisi simultan** untuk menjaga free margin tetap tebal (>800%).
-   - **Mandatory Hard Stop Loss:** Setiap order wajib memiliki Stop Loss terpasang langsung di server broker MT5 (tidak dibiarkan floating tanpa rem).
-   - **Circuit Breaker Harian:** Jika total rugi terealisasi dalam 1 hari mencapai **`-$50.00 USD`** (5% dari modal $1,000), bot otomatis menolak membuka order baru untuk melindungi modal tersisa.
-   - **Emergency Equity Floor:** Bot otomatis menghentikan transaksi jika equity turun ke **`$800.00 USD`**.
+   - **Batas Maksimal Posisi:** Maksimal **3 posisi simultan** untuk menjaga margin aman.
+   - **Mandatory Hard Stop Loss:** Setiap order wajib memiliki Stop Loss terpasang langsung di server broker MT5.
+   - **Circuit Breaker Harian:** Jika total rugi terealisasi dalam 1 hari mencapai **`-$50.00 USD`**, bot otomatis menolak membuka order baru.
+   - **Emergency Equity Floor ($10 USD):** Bot otomatis menghentikan transaksi dan menutup seluruh posisi jika equity menyentuh atau turun ke **`$10.00 USD`**.
 3. **Dedicated MT5 Container + Web noVNC (Browser View)**:
    - Menjalankan terminal MT5 Headway-Real secara mandiri dan terisolasi di dalam container Docker.
    - Anda dapat melihat tampilan grafik, saldo riil, dan posisi floating MT5 secara langsung di browser Anda melalui **port 3002** (`http://<ip-server>:3002/`).

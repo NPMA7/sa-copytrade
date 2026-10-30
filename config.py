@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 # Load .env dari root folder
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env", override=True)
 
 # MetaTrader 5 Configuration
 MT5_LOGIN = int(os.getenv("MT5_LOGIN", "17607969"))
@@ -26,9 +26,21 @@ ARENA_BASE_URL = os.getenv("ARENA_BASE_URL", "http://127.0.0.1:8080").rstrip("/"
 ARENA_WS_URL = os.getenv("ARENA_WS_URL", "ws://127.0.0.1:8080/ws/signals")
 ARENA_API_KEY = os.getenv("ARENA_API_KEY", "pk_live_strategyarena_public_feed")
 
-# Target Strategy
-TARGET_STRATEGY = os.getenv("TARGET_STRATEGY", "gap_fill")
-TARGET_STRATEGY_NAME = os.getenv("TARGET_STRATEGY_NAME", "Gap Fill Reversal")
+# Target Strategies & Mapping
+STRATEGY_NAMES_MAP = {
+    "roc_momentum": "ROC Momentum 12",
+    "price_ema_dev": "EMA Deviation",
+    "gap_fill": "Gap Fill Reversal",
+}
+
+_raw_strategies = os.getenv("TARGET_STRATEGIES", os.getenv("TARGET_STRATEGY", "roc_momentum,price_ema_dev"))
+TARGET_STRATEGIES = [s.strip() for s in _raw_strategies.split(",") if s.strip()]
+TARGET_STRATEGIES_SET = set(TARGET_STRATEGIES)
+TARGET_STRATEGIES_QUERY = ",".join(TARGET_STRATEGIES)
+TARGET_STRATEGY = TARGET_STRATEGIES[0] if TARGET_STRATEGIES else "roc_momentum"
+
+_default_names = " & ".join(STRATEGY_NAMES_MAP.get(s, s) for s in TARGET_STRATEGIES) or "Multi-Strategy"
+TARGET_STRATEGY_NAME = os.getenv("TARGET_STRATEGY_NAME", _default_names)
 TARGET_MODE = os.getenv("TARGET_MODE", "forex")
 AUTO_SYNC_PAST_TRADES = os.getenv("AUTO_SYNC_PAST_TRADES", "false").lower() in ("true", "1", "yes")
 
@@ -40,7 +52,7 @@ MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
 
 # Circuit Breakers & Proteksi Akun
 MAX_DAILY_LOSS_USD = float(os.getenv("MAX_DAILY_LOSS_USD", "50.0"))
-MIN_EQUITY_USD = float(os.getenv("MIN_EQUITY_USD", "800.0"))
+MIN_EQUITY_USD = float(os.getenv("MIN_EQUITY_USD", "10.0"))
 ENFORCE_SL = os.getenv("ENFORCE_SL", "true").lower() in ("true", "1", "yes")
 DEFAULT_SL_PIPS = float(os.getenv("DEFAULT_SL_PIPS", "35.0"))
 DEFAULT_TP_PIPS = float(os.getenv("DEFAULT_TP_PIPS", "70.0"))

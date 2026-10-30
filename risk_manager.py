@@ -37,6 +37,11 @@ class RiskManager:
         return lot
 
     @staticmethod
+    def is_equity_halted(equity: float) -> bool:
+        """Mengecek apakah equity akun menyentuh atau berada di bawah ambang batas stop ($10)."""
+        return equity <= MIN_EQUITY_USD
+
+    @staticmethod
     def can_open_position(
         symbol: str,
         equity: float,
@@ -44,9 +49,9 @@ class RiskManager:
         current_open_positions: list[dict],
     ) -> Tuple[bool, str]:
         """Pemeriksaan pra-eksekusi (pre-trade checks) sebelum mengirim order ke broker Headway."""
-        # 1. Periksa batas minimum equity (Emergency Floor)
-        if equity < MIN_EQUITY_USD:
-            msg = f"Equity akun (${equity:.2f}) di bawah batas aman minimum (${MIN_EQUITY_USD:.2f}). Order ditolak!"
+        # 1. Periksa batas minimum equity (Emergency Floor $10 USD)
+        if equity <= MIN_EQUITY_USD:
+            msg = f"Equity akun (${equity:.2f}) telah mencapai atau di bawah batas minimum stop (${MIN_EQUITY_USD:.2f}). Order ditolak!"
             log.warning("⚠️ RISK GUARD: %s", msg)
             return False, msg
 

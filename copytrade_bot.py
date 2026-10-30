@@ -1,5 +1,5 @@
 """Strategy Arena Copy-Trading Bot Daemon.
-Menyalin sinyal strategi 'Gap Fill Reversal' secara real-time ke akun real MetaTrader 5 Headway.
+Menyalin sinyal strategi terpilih (ROC Momentum 12 & EMA Deviation) secara real-time ke akun real MetaTrader 5 Headway.
 """
 
 from __future__ import annotations
@@ -17,12 +17,17 @@ from config import (
     ARENA_BASE_URL,
     ARENA_WS_URL,
     ARENA_API_KEY,
+    TARGET_STRATEGIES,
+    TARGET_STRATEGIES_SET,
+    TARGET_STRATEGIES_QUERY,
+    STRATEGY_NAMES_MAP,
     TARGET_STRATEGY,
     TARGET_STRATEGY_NAME,
     TARGET_MODE,
     AUTO_SYNC_PAST_TRADES,
     POLL_INTERVAL_SEC,
     MT5_MAGIC_NUMBER,
+    MIN_EQUITY_USD,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     log,
@@ -66,8 +71,18 @@ async def execute_open_signal(sig: dict, acc_info: dict) -> None:
     action = sig.get("action", "")
     strategy_id = sig.get("strategy", TARGET_STRATEGY)
 
+    # Validasi apakah strategi termasuk yang diikuti
+    if strategy_id not in TARGET_STRATEGIES_SET:
+        log.info("⏩ Mengabaikan sinyal %s %s: Strategi '%s' tidak diikuti.", action, symbol, strategy_id)
+        return
+
     equity = acc_info.get("equity", 1000.0)
     balance = acc_info.get("balance", 1000.0)
+
+    # Cek Circuit Breaker Equity Floor ($10)
+    if RiskManager.is_equity_halted(equity):
+        log.warning("🛑 Sinyal %s %s dibatalkan: Equity ($%.2f) telah mencapai/di bawah batas stop ($%.2f)!", action, symbol, equity, MIN_EQUITY_USD)
+        return
 
     # 1. Cek database & MT5 apakah posisi sudah terbuka
     existing_db = trade_storage.get_open_position_by_symbol(symbol)
@@ -103,9 +118,10 @@ async def execute_open_signal(sig: dict, acc_info: dict) -> None:
         pip_size=pip_size,
     )
 
+    strat_title = STRATEGY_NAMES_MAP.get(strategy_id, strategy_id)
     log.info(
-        "⚡ MEMPROSES SINYAL: %s %s | Lot: %.2f | Entry Est: %.5f | SL: %.5f | TP: %.5f",
-        action, symbol, lot, entry_price, sl, tp
+        "⚡ MEMPROSES SINYAL: [%s] %s %s | Lot: %.2f | Entry Est: %.5f | SL: %.5f | TP: %.5f",
+        strat_title, action, symbol, lot, entry_price, sl, tp
     )
 
     # 4. Eksekusi order ke broker Headway
@@ -115,7 +131,7 @@ async def execute_open_signal(sig: dict, acc_info: dict) -> None:
         lot=lot,
         sl=sl,
         tp=tp,
-        comment=f"SA:{TARGET_STRATEGY}",
+        comment=f"SA:{strategy_id}",
     )
 
     if ok:
@@ -131,7 +147,7 @@ async def execute_open_signal(sig: dict, acc_info: dict) -> None:
         )
         msg = (
             f"🟢 *SA COPY-TRADE: ORDER DIBUKA*\n"
-            f"• Strategi: `{TARGET_STRATEGY_NAME}`\n"
+            f"• Strategi: `{strat_title}` (`{strategy_id}`)\n"
             f"• Simbol: `{symbol}` ({side})\n"
             f"• Lot: `{lot}`\n"
             f"• Harga Fill: `{fill_price:.5f}`\n"
@@ -149,6 +165,11 @@ async def execute_close_signal(sig: dict, acc_info: dict) -> None:
     """Mengeksekusi sinyal penutupan posisi dari Strategy Arena."""
     symbol = sig.get("symbol", "").upper()
     action = sig.get("action", "CLOSE_SIGNAL")
+    strategy_id = sig.get("strategy")
+
+    # Filter jika strategi disebutkan dan bukan salah satu target strategi
+    if strategy_id and strategy_id not in TARGET_STRATEGIES_SET:
+        return
 
     # Cari posisi di database
     db_pos = trade_storage.get_open_position_by_symbol(symbol)
@@ -156,6 +177,7 @@ async def execute_close_signal(sig: dict, acc_info: dict) -> None:
 
     if db_pos:
         ticket_to_close = db_pos["ticket"]
+        strategy_id = db_pos.get("strategy", strategy_id or TARGET_STRATEGY)
     else:
         # Cek langsung di MT5 jika tidak ada di database lokal
         open_positions = mt5.get_open_positions(MT5_MAGIC_NUMBER)
@@ -168,7 +190,8 @@ async def execute_close_signal(sig: dict, acc_info: dict) -> None:
         log.info("ℹ️ Sinyal tutup %s diterima, tetapi tidak ada posisi terbuka untuk %s.", action, symbol)
         return
 
-    log.info("🏁 MENUTUP POSISI: Ticket #%s (%s) karena sinyal %s", ticket_to_close, symbol, action)
+    strat_title = STRATEGY_NAMES_MAP.get(strategy_id, strategy_id) if strategy_id else TARGET_STRATEGY_NAME
+    log.info("🏁 MENUTUP POSISI: Ticket #%s (%s - %s) karena sinyal %s", ticket_to_close, symbol, strat_title, action)
     ok, close_price, profit, err = mt5.close_position(ticket_to_close, comment=f"SA:{action}")
 
     if ok:
@@ -181,7 +204,7 @@ async def execute_close_signal(sig: dict, acc_info: dict) -> None:
         pnl_symbol = "🟢" if profit >= 0 else "🔴"
         msg = (
             f"{pnl_symbol} *SA COPY-TRADE: POSISI DITUTUP*\n"
-            f"• Strategi: `{TARGET_STRATEGY_NAME}`\n"
+            f"• Strategi: `{strat_title}`\n"
             f"• Simbol: `{symbol}`\n"
             f"• Harga Tutup: `{close_price:.5f}`\n"
             f"• Realized PnL: *${profit:+.2f}*\n"
@@ -205,9 +228,36 @@ async def poll_reconciliation_task() -> None:
             if not acc_info:
                 continue
 
-            # 1. Ambil posisi terbuka riil dari Strategy Arena REST API
+            equity = acc_info.get("equity", 0.0)
+
+            # EMERGENCY CIRCUIT BREAKER: Stop jika equity <= MIN_EQUITY_USD ($10)
+            if RiskManager.is_equity_halted(equity):
+                log.critical("🚨 EMERGENCY CIRCUIT BREAKER: Equity ($%.2f) <= batas minimum stop ($%.2f)!", equity, MIN_EQUITY_USD)
+                mt5_active = mt5.get_open_positions(MT5_MAGIC_NUMBER)
+                if mt5_active:
+                    for p in mt5_active:
+                        ticket = p["ticket"]
+                        sym = p.get("symbol", "")
+                        log.warning("🚨 EMERGENCY STOP: Menutup posisi MT5 Ticket #%s (%s) untuk mengamankan sisa equity...", ticket, sym)
+                        ok, close_price, profit, err = mt5.close_position(ticket, comment="SA:EQUITY_STOP")
+                        if ok:
+                            trade_storage.record_close(
+                                ticket=ticket,
+                                close_price=close_price,
+                                pnl=profit,
+                                close_reason="EMERGENCY_EQUITY_STOP",
+                            )
+                    send_telegram_alert(
+                        f"🚨 *SA COPY-TRADE: EMERGENCY STOP TRIPPED*\n"
+                        f"• Equity Akun: `${equity:.2f}` (Batas Stop: `${MIN_EQUITY_USD:.2f}`)\n"
+                        f"• Tindakan: Seluruh ({len(mt5_active)}) posisi aktif telah ditutup darurat.\n"
+                        f"• Eksekusi dihentikan untuk melindungi saldo modal tersisa."
+                    )
+                continue
+
+            # 1. Ambil posisi terbuka riil dari Strategy Arena REST API untuk strategi target
             params = {
-                "strategy": TARGET_STRATEGY,
+                "strategy": TARGET_STRATEGIES_QUERY,
                 "mode": TARGET_MODE,
                 "api_key": ARENA_API_KEY,
             }
@@ -218,7 +268,9 @@ async def poll_reconciliation_task() -> None:
                         continue
                     data = await resp.json()
 
-            arena_positions = data.get("positions", [])
+            raw_positions = data.get("positions", [])
+            arena_positions = [p for p in raw_positions if p.get("strategy") in TARGET_STRATEGIES_SET]
+            arena_strat_symbols = {(p["symbol"].upper(), p.get("strategy")) for p in arena_positions}
             arena_symbols = {p["symbol"].upper() for p in arena_positions}
 
             # 2. Ambil posisi yang masih kita catat OPEN di database
@@ -227,9 +279,10 @@ async def poll_reconciliation_task() -> None:
             # 3. Jika di Strategy Arena posisi sudah tutup tapi di bot masih buka -> TUTUP!
             for pos in db_open_positions:
                 sym = pos["symbol"].upper()
-                if sym not in arena_symbols:
-                    log.info("🔍 REKONSILIASI: Posisi %s sudah ditutup di Strategy Arena. Menutup di MT5...", sym)
-                    await execute_close_signal({"symbol": sym, "action": "SYNC_CLOSE"}, acc_info)
+                strat = pos.get("strategy")
+                if (strat and (sym, strat) not in arena_strat_symbols) or (not strat and sym not in arena_symbols):
+                    log.info("🔍 REKONSILIASI: Posisi %s (%s) sudah ditutup di Strategy Arena. Menutup di MT5...", sym, strat or "all")
+                    await execute_close_signal({"symbol": sym, "strategy": strat, "action": "SYNC_CLOSE"}, acc_info)
 
             # 4. Cek apakah posisi MT5 ditutup oleh broker (misal hit hard SL/TP)
             mt5_active = mt5.get_open_positions(MT5_MAGIC_NUMBER)
@@ -255,8 +308,9 @@ async def poll_reconciliation_task() -> None:
 
                 for p in arena_positions:
                     sym = p.get("symbol", "").upper()
+                    strat = p.get("strategy", TARGET_STRATEGY)
                     if sym not in db_symbols and sym not in mt5_symbols:
-                        log.info("🔍 REKONSILIASI: Menemukan posisi aktif '%s' (%s) di Strategy Arena. Menyinkronkan ke MT5...", sym, p.get("side"))
+                        log.info("🔍 REKONSILIASI: Menemukan posisi aktif '%s' (%s - %s) di Strategy Arena. Menyinkronkan ke MT5...", sym, p.get("side"), strat)
                         sig_to_open = {
                             "symbol": sym,
                             "side": p.get("side", "LONG"),
@@ -264,7 +318,7 @@ async def poll_reconciliation_task() -> None:
                             "price": p.get("current_price"),
                             "stop_loss": p.get("stop_loss"),
                             "take_profit": p.get("take_profit"),
-                            "strategy": p.get("strategy", TARGET_STRATEGY),
+                            "strategy": strat,
                         }
                         await execute_open_signal(sig_to_open, acc_info)
 
@@ -276,7 +330,7 @@ async def poll_reconciliation_task() -> None:
 
 async def websocket_signal_listener() -> None:
     """Menghubungkan ke WebSocket Strategy Arena dan menerima broadcast sinyal instan."""
-    ws_endpoint = f"{ARENA_WS_URL}?strategy={TARGET_STRATEGY}&mode={TARGET_MODE}&api_key={ARENA_API_KEY}"
+    ws_endpoint = f"{ARENA_WS_URL}?strategy={TARGET_STRATEGIES_QUERY}&mode={TARGET_MODE}&api_key={ARENA_API_KEY}"
     backoff = 2
 
     while running:
@@ -284,7 +338,7 @@ async def websocket_signal_listener() -> None:
             log.info("Menghubungkan ke WebSocket sinyal di %s...", ws_endpoint)
             async with aiohttp.ClientSession() as session:
                 async with session.ws_connect(ws_endpoint, heartbeat=20.0) as ws:
-                    log.info("✓ Terhubung ke WebSocket Strategy Arena! Mendengarkan sinyal '%s'...", TARGET_STRATEGY_NAME)
+                    log.info("✓ Terhubung ke WebSocket Strategy Arena! Mendengarkan strategi: %s (%s)...", TARGET_STRATEGY_NAME, TARGET_STRATEGIES_QUERY)
                     backoff = 2
 
                     async for msg in ws:
@@ -303,6 +357,12 @@ async def websocket_signal_listener() -> None:
                                 elif msg_type == "signal":
                                     sig = payload.get("signal", {})
                                     action = sig.get("action", "")
+                                    sig_strat = sig.get("strategy", "")
+
+                                    # Filter agar hanya memproses strategi target yang diikuti
+                                    if sig_strat and sig_strat not in TARGET_STRATEGIES_SET:
+                                        continue
+
                                     acc_info = mt5.get_account_info() or {"equity": 1000.0, "balance": 1000.0}
 
                                     if action.startswith("OPEN_"):
@@ -335,9 +395,11 @@ async def main() -> None:
     trade_storage.init_db()
 
     log.info("=" * 70)
-    log.info("STRATEGY ARENA COPY-TRADING ENGINE v1.0")
-    log.info("Target Strategi: %s (%s) | Mode: %s", TARGET_STRATEGY_NAME, TARGET_STRATEGY, TARGET_MODE)
-    log.info("Akun MT5: %s | Server: %s", mt5.host, mt5.port)
+    log.info("STRATEGY ARENA COPY-TRADING ENGINE v1.1 (Multi-Strategy)")
+    log.info("Target Strategi : %s (%s)", TARGET_STRATEGY_NAME, ", ".join(TARGET_STRATEGIES))
+    log.info("Mode Pasar      : %s", TARGET_MODE)
+    log.info("Emergency Stop  : Equity <= $%.2f USD", MIN_EQUITY_USD)
+    log.info("Akun MT5        : %s | Server: %s", mt5.host, mt5.port)
     log.info("=" * 70)
 
     # Inisialisasi koneksi awal MT5
@@ -376,4 +438,5 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 

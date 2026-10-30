@@ -12,6 +12,8 @@ from rich.panel import Panel
 from config import (
     ARENA_BASE_URL,
     ARENA_API_KEY,
+    TARGET_STRATEGIES,
+    TARGET_STRATEGIES_QUERY,
     TARGET_STRATEGY,
     TARGET_STRATEGY_NAME,
     TARGET_MODE,
@@ -20,6 +22,7 @@ from config import (
     MT5_PORT,
     MT5_LOGIN,
     MT5_SERVER,
+    MIN_EQUITY_USD,
 )
 from mt5_client import MT5Client
 import trade_storage
@@ -36,8 +39,9 @@ def show_status():
     table.add_column("Parameter", style="dim", width=25)
     table.add_column("Nilai / Keterangan", style="bold")
 
-    table.add_row("Target Strategi", f"{TARGET_STRATEGY_NAME} (`{TARGET_STRATEGY}`)")
+    table.add_row("Target Strategi", f"{TARGET_STRATEGY_NAME} (`{', '.join(TARGET_STRATEGIES)}`)")
     table.add_row("Mode Pasar", TARGET_MODE.upper())
+    table.add_row("Emergency Equity Stop", f"${MIN_EQUITY_USD:,.2f}")
     table.add_row("Login MT5", str(MT5_LOGIN))
     table.add_row("Server Broker", MT5_SERVER)
     table.add_row("MT5 Terminal Host", f"{MT5_HOST}:{MT5_PORT}")
@@ -95,7 +99,7 @@ def test_signal():
     console.print(f"Menguji koneksi ke Strategy Arena ({ARENA_BASE_URL})...")
     url = f"{ARENA_BASE_URL}/api/v1/signals/positions"
     params = {
-        "strategy": TARGET_STRATEGY,
+        "strategy": TARGET_STRATEGIES_QUERY,
         "mode": TARGET_MODE,
         "api_key": ARENA_API_KEY,
     }
@@ -104,11 +108,12 @@ def test_signal():
         if r.status_code == 200:
             data = r.json()
             console.print("[green]✓ Sukses terhubung ke Strategy Arena Signal API![/green]")
-            console.print(f"• Total posisi aktif strategi '{TARGET_STRATEGY_NAME}': {data.get('count', 0)}")
+            console.print(f"• Total posisi aktif target strategi ({TARGET_STRATEGY_NAME}): {data.get('count', 0)}")
             positions = data.get("positions", [])
             for p in positions:
+                strat_label = p.get('strategy_name') or p.get('strategy', 'Unknown')
                 console.print(
-                    f"  - {p['symbol']} | {p['action']} | Entry: {p['entry_price']} | SL: {p.get('stop_loss')} | TP: {p.get('take_profit')} | Lot: {p.get('lot')}"
+                    f"  - [{strat_label}] {p['symbol']} | {p['action']} | Entry: {p['entry_price']} | SL: {p.get('stop_loss')} | TP: {p.get('take_profit')} | Lot: {p.get('lot')}"
                 )
         else:
             console.print(f"[red]Gagal mengambil sinyal: HTTP {r.status_code} - {r.text}[/red]")
