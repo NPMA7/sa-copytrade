@@ -19,7 +19,7 @@ from config import (
 
 
 class MT5Client:
-    """Wrapper profesional MetaTrader 5 untuk eksekusi order pada akun riil Headway."""
+    """Wrapper profesional MetaTrader 5 untuk eksekusi order pada akun riil."""
 
     def __init__(self, host: str = MT5_HOST, port: int = MT5_PORT):
         self.host = host

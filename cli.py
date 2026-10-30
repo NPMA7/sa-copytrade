@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI Management Utility untuk SA Copy-Trade (Headway Real)."""
+"""CLI Management Utility untuk SA Copy-Trade (Real)."""
 
 import argparse
 import sys
@@ -35,7 +35,7 @@ def show_status():
     mt5 = MT5Client()
     connected = mt5.connect()
 
-    table = Table(title="📊 Status Copy-Trade Engine (Headway Real)", show_header=True, header_style="bold cyan")
+    table = Table(title="📊 Status Copy-Trade Engine (Real)", show_header=True, header_style="bold cyan")
     table.add_column("Parameter", style="dim", width=25)
     table.add_column("Nilai / Keterangan", style="bold")
 

@@ -52,7 +52,7 @@ class RiskManager:
         current_open_positions: list[dict],
         strategy: str = "",
     ) -> Tuple[bool, str]:
-        """Pemeriksaan pra-eksekusi (pre-trade checks) sebelum mengirim order ke broker Headway."""
+        """Pemeriksaan pra-eksekusi (pre-trade checks) sebelum mengirim order ke broker."""
         # 1. Periksa batas minimum equity (Emergency Floor)
         if MIN_EQUITY_USD > 0 and equity <= MIN_EQUITY_USD:
             msg = f"Equity akun (${equity:.2f}) telah mencapai atau di bawah batas minimum stop (${MIN_EQUITY_USD:.2f}). Order ditolak!"

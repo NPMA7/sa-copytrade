@@ -1,5 +1,5 @@
 """Strategy Arena Copy-Trading Bot Daemon.
-Menyalin sinyal strategi terpilih (ROC Momentum 12 & EMA Deviation) secara real-time ke akun real MetaTrader 5 Headway.
+Menyalin sinyal strategi terpilih (ROC Momentum 12 & EMA Deviation) secara real-time ke akun real MetaTrader 5.
 """
 
 from __future__ import annotations
@@ -320,7 +320,7 @@ async def handle_telegram_command(text: str, chat_id: str) -> None:
             strats_list = "\n".join(f"  {i+1}. {STRATEGY_NAMES_MAP.get(s, s)} (<code>{s}</code>)" for i, s in enumerate(TARGET_STRATEGIES))
             hedging_str = "🟢 AKTIF (Strategi berbeda boleh buka di pair sama)" if ALLOW_HEDGING else "🔴 NONAKTIF (1 pair 1 posisi)"
             status_msg = (
-                "📊 <b>Status Copy-Trade Engine (Headway Real)</b>\n\n"
+                "📊 <b>Status Copy-Trade Engine (Real)</b>\n\n"
                 f"• <b>Login:</b> <code>{acc['login']}</code> ({acc['server']})\n"
                 f"• <b>Saldo:</b> <code>{acc['balance']:,.2f} {acc['currency']}</code>\n"
                 f"• <b>Equity:</b> <code>{acc['equity']:,.2f} {acc['currency']}</code>\n"
@@ -495,7 +495,7 @@ async def execute_open_signal(sig: dict, acc_info: dict) -> None:
         strat_title, action, symbol, lot, entry_price, sl, tp
     )
 
-    # 4. Eksekusi order ke broker Headway
+    # 4. Eksekusi order ke broker 
     ok, ticket, fill_price, err = mt5.open_position(
         symbol=symbol,
         side=side,

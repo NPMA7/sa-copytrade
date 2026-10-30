@@ -1,6 +1,6 @@
 # 🚀 Strategy Arena — Real Account Copy-Trade Engine (Headway MT5)
 
-Program Copy-Trading otomatis profesional untuk menyalin sinyal dari **Strategy Arena** secara real-time ke akun **MetaTrader 5 Real (Headway)**.
+Program Copy-Trading otomatis profesional untuk menyalin sinyal dari **Strategy Arena** secara real-time ke akun **MetaTrader 5 Real**.
 
 Khusus dikonfigurasi dan dioptimasi untuk menyalin strategi kuantitatif forex & komoditas:
 > 🎯 **Target Strategi Aktif:** `ROC Momentum 12` (`roc_momentum`) & `Gap Fill Reversal` (`gap_fill`)  
@@ -18,7 +18,7 @@ Khusus dikonfigurasi dan dioptimasi untuk menyalin strategi kuantitatif forex & 
 - **WebSocket Feed Instan**: Terhubung langsung ke WebSocket stream Strategy Arena (`ws://.../ws/signals?strategy=roc_momentum,gap_fill&mode=forex`).
 - **Multi-Strategy Hedging (`ALLOW_HEDGING=true`)**:
   - Mengizinkan strategi yang berbeda membuka posisi berlawanan pada pair yang sama tanpa konflik (contoh: `roc_momentum` membuka **SHORT XAUUSD**, sedangkan `gap_fill` membuka **LONG XAUUSD**).
-  - Terminal MT5 Headway mengeksekusi kedua order secara independen dengan nomor tiket terpisah.
+  - Terminal MT5 mengeksekusi kedua order secara independen dengan nomor tiket terpisah.
   - Sinyal penutupan (CLOSE) dipetakan spesifik berdasarkan pasangan `(strategy_id, symbol)`, sehingga exit dari satu strategi tidak akan menutup posisi milik strategi lain.
 - **Smart Fresh-Trade Reconciliation**:
   - Saat bot pertama kali dijalankan atau setelah rekoneksi WebSocket, sistem *watchdog* secara otomatis memindai trade aktif di Strategy Arena yang berumur $\le$ 900 detik (15 menit).

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # STRATEGY ARENA COPY-TRADE ENGINE CONTROLLER
-# Headway Real Account ($1,000 USD) - Target: Gap Fill Reversal
+# Real Account ($1,000 USD) - Target: Gap Fill Reversal
 # ==============================================================================
 
 set -e
@@ -20,7 +20,7 @@ NC='\033[0m' # No Color
 print_banner() {
     echo -e "${CYAN}${BOLD}"
     echo "========================================================================"
-    echo "       STRATEGY ARENA COPY-TRADE ENGINE — HEADWAY REAL ($1,000)         "
+    echo "       STRATEGY ARENA COPY-TRADE ENGINE — REAL ($1,000)         "
     echo "========================================================================"
     echo -e "${NC}"
 }
@@ -34,10 +34,10 @@ check_env() {
     # Cek apakah password masih placeholder
     if grep -q "MASUKKAN_PASSWORD_DISINI" .env; then
         echo -e "${RED}${BOLD}[PERINGATAN KRUSIAL]${NC}"
-        echo -e "${YELLOW}Kata sandi akun MetaTrader 5 Headway belum diatur di file .env!${NC}"
+        echo -e "${YELLOW}Kata sandi akun MetaTrader 5 belum diatur di file .env!${NC}"
         echo -e "Silakan buka dan edit file .env terlebih dahulu:"
         echo -e "  ${BOLD}nano /var/www/sa-copytrade/.env${NC}"
-        echo -e "Ubah baris ${BOLD}MT5_PASSWORD=...${NC} dengan kata sandi akun Headway Anda."
+        echo -e "Ubah baris ${BOLD}MT5_PASSWORD=...${NC} dengan kata sandi akun Anda."
         echo ""
         read -p "Apakah Anda ingin melanjutkan sekarang? [y/N]: " confirm
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
