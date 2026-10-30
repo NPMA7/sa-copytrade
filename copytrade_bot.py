@@ -41,20 +41,276 @@ running = True
 mt5 = MT5Client()
 
 
-def send_telegram_alert(message: str) -> None:
+def send_telegram_alert(message: str, chat_id: Optional[str] = None, parse_mode: str = "HTML") -> None:
     """Mengirim notifikasi Telegram jika token dan chat_id dikonfigurasi."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    target_chat = chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_BOT_TOKEN or not target_chat:
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
+            "chat_id": target_chat,
             "text": message,
-            "parse_mode": "Markdown",
+            "parse_mode": parse_mode,
         }
-        requests.post(url, json=payload, timeout=5)
+        res = requests.post(url, json=payload, timeout=5)
+        if res.status_code != 200:
+            # Fallback tanpa parsing jika ada tag tidak valid
+            requests.post(url, json={"chat_id": target_chat, "text": message}, timeout=5)
     except Exception as exc:
         log.warning("Gagal mengirim Telegram alert: %s", exc)
+
+
+def find_matching_strategies(query: str) -> list[str]:
+    """Mencocokkan nama atau kata kunci strategi dari user Telegram ke ID strategi."""
+    q = query.strip().lower()
+    if not q or q in ("all", "*", "semua"):
+        return list(TARGET_STRATEGIES)
+
+    # 1. Cek exact match ID atau Nama
+    for sid, sname in STRATEGY_NAMES_MAP.items():
+        if q == sid.lower() or q == sname.lower():
+            return [sid]
+
+    # 2. Cek substring match
+    matches = []
+    for sid, sname in STRATEGY_NAMES_MAP.items():
+        if q in sid.lower() or q in sname.lower():
+            matches.append(sid)
+
+    # 3. Jika tidak ada di STRATEGY_NAMES_MAP, izinkan query langsung (misal ID strategi arena lainnya)
+    if not matches and (q.isalnum() or "_" in q):
+        matches.append(q)
+
+    return matches
+
+
+async def handle_posisi_command(arg: str, chat_id: str) -> None:
+    """Mengambil posisi aktif dari Strategy Arena dan MT5 untuk strategi yang diminta."""
+    matching_strats = find_matching_strategies(arg)
+    if not matching_strats:
+        avail_strats = "\n".join(f"  • <code>{s}</code> ({STRATEGY_NAMES_MAP.get(s, s)})" for s in TARGET_STRATEGIES)
+        msg = (
+            f"⚠️ <b>Strategi '{arg}' tidak ditemukan.</b>\n\n"
+            f"Strategi yang sedang Anda ikuti:\n{avail_strats}\n\n"
+            f"💡 Ketik <code>/posisi</code> untuk melihat semua strategi yang diikuti."
+        )
+        send_telegram_alert(msg, chat_id=chat_id, parse_mode="HTML")
+        return
+
+    # Ambil posisi riil dari MT5 dan database lokal
+    mt5_open = mt5.get_open_positions(MT5_MAGIC_NUMBER) if mt5 else []
+    db_open = trade_storage.get_all_open_positions()
+
+    mt5_pos_map = {p.get("symbol", "").upper(): p for p in mt5_open}
+    db_pos_map = {p.get("symbol", "").upper(): p for p in db_open}
+
+    query_strats = ",".join(matching_strats)
+    api_url = f"{ARENA_BASE_URL}/api/v1/signals/positions"
+    params = {
+        "strategy": query_strats,
+        "mode": TARGET_MODE,
+        "api_key": ARENA_API_KEY,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, params=params, timeout=5) as resp:
+                if resp.status != 200:
+                    send_telegram_alert(f"⚠️ Gagal menghubungi Strategy Arena API (HTTP {resp.status})", chat_id=chat_id)
+                    return
+                data = await resp.json()
+    except Exception as exc:
+        send_telegram_alert(f"⚠️ Error mengambil posisi dari Strategy Arena: {exc}", chat_id=chat_id)
+        return
+
+    arena_positions = data.get("positions", [])
+    strat_arena_map: dict[str, list[dict]] = {sid: [] for sid in matching_strats}
+    for p in arena_positions:
+        sid = p.get("strategy")
+        if sid in strat_arena_map:
+            strat_arena_map[sid].append(p)
+        else:
+            strat_arena_map[sid] = [p]
+
+    lines = [f"📍 <b>Laporan Posisi Aktif ({len(matching_strats)} Strategi)</b>\n"]
+
+    for sid in matching_strats:
+        sname = STRATEGY_NAMES_MAP.get(sid, sid)
+        pos_list = strat_arena_map.get(sid, [])
+        lines.append(f"━━ <b>{sname}</b> (<code>{sid}</code>) ━━")
+
+        if not pos_list:
+            lines.append("  <i>Tidak ada posisi terbuka di Strategy Arena (Standby menunggu sinyal).</i>\n")
+            continue
+
+        for p in pos_list:
+            sym = p.get("symbol", "").upper()
+            side = p.get("side", "LONG")
+            side_badge = "🟢 LONG" if side == "LONG" else "🔴 SHORT"
+            entry_px = float(p.get("entry_price") or 0.0)
+            cur_px = float(p.get("current_price") or 0.0)
+            sl = p.get("stop_loss")
+            tp = p.get("take_profit")
+            pnl_usd = float(p.get("unrealized_pnl_usd") or 0.0)
+
+            lines.append(f"• <b>{sym}</b> [{side_badge}]")
+            lines.append(f"  ├ Entry Sinyal: <code>{entry_px:.5f}</code> | Kini: <code>{cur_px:.5f}</code>")
+            if sl and tp:
+                lines.append(f"  ├ SL: <code>{float(sl):.5f}</code> | TP: <code>{float(tp):.5f}</code>")
+            lines.append(f"  ├ Floating Arena: <code>{pnl_usd:+.2f} USD</code>")
+
+            # Cek status di MT5 Real kita
+            if sym in mt5_pos_map:
+                m_pos = mt5_pos_map[sym]
+                lines.append(f"  └ <b>Status MT5 Real:</b> 🟢 <b>OPEN</b> (Ticket #{m_pos.get('ticket')}, Lot: {m_pos.get('volume'):.2f}, Profit: ${m_pos.get('profit', 0.0):+.2f})")
+            elif sym in db_pos_map:
+                d_pos = db_pos_map[sym]
+                lines.append(f"  └ <b>Status MT5 Real:</b> 🟡 <b>TERCATAT</b> (Ticket #{d_pos.get('ticket')})")
+            else:
+                lines.append(f"  └ <b>Status MT5 Real:</b> ⏳ Menunggu sinyal baru (Posisi lama tidak dibuka otomatis)")
+
+        lines.append("")
+
+    full_msg = "\n".join(lines).strip()
+    send_telegram_alert(full_msg, chat_id=chat_id, parse_mode="HTML")
+
+
+async def handle_telegram_command(text: str, chat_id: str) -> None:
+    """Memproses perintah yang dikirimkan user di Telegram."""
+    clean_text = text.strip()
+    parts = clean_text.split(maxsplit=1)
+    cmd = parts[0].lower().split("@")[0]
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    log.info("📩 Menerima perintah Telegram: %s dari %s (arg: '%s')", cmd, chat_id, arg)
+
+    if cmd in ("/start", "/help"):
+        help_msg = (
+            "🤖 <b>SA Copy-Trade Control Bot</b>\n\n"
+            "Perintah yang dapat Anda gunakan:\n\n"
+            "• <code>/posisi</code>\n"
+            "  Melihat posisi aktif dari semua strategi yang diikuti.\n\n"
+            "• <code>/posisi &lt;nama_strategi&gt;</code>\n"
+            "  Melihat posisi aktif strategi tertentu.\n"
+            "  <i>Contoh:</i>\n"
+            "  - <code>/posisi roc_momentum</code>\n"
+            "  - <code>/posisi price_ema_dev</code>\n"
+            "  - <code>/posisi gap_fill</code>\n\n"
+            "• <code>/status</code>\n"
+            "  Cek saldo akun MT5, equity, margin, dan status bot.\n\n"
+            "• <code>/help</code>\n"
+            "  Tampilkan pesan panduan ini."
+        )
+        send_telegram_alert(help_msg, chat_id=chat_id, parse_mode="HTML")
+
+    elif cmd == "/status":
+        acc = mt5.get_account_info()
+        open_pos = mt5.get_open_positions(MT5_MAGIC_NUMBER) if mt5 else []
+        db_open = trade_storage.get_all_open_positions()
+
+        if acc:
+            stop_str = f"{MIN_EQUITY_USD} {acc['currency']}" if MIN_EQUITY_USD > 0 else "0 (Sampai saldo habis)"
+            strats_list = "\n".join(f"  {i+1}. {STRATEGY_NAMES_MAP.get(s, s)} (<code>{s}</code>)" for i, s in enumerate(TARGET_STRATEGIES))
+            status_msg = (
+                "📊 <b>Status Copy-Trade Engine (Headway Real)</b>\n\n"
+                f"• <b>Login:</b> <code>{acc['login']}</code> ({acc['server']})\n"
+                f"• <b>Saldo:</b> <code>{acc['balance']:,.2f} {acc['currency']}</code>\n"
+                f"• <b>Equity:</b> <code>{acc['equity']:,.2f} {acc['currency']}</code>\n"
+                f"• <b>Floating PnL:</b> <code>{acc['profit']:+,.2f} {acc['currency']}</code>\n"
+                f"• <b>Margin Terpakai:</b> <code>{acc['margin']:,.2f} {acc['currency']}</code>\n"
+                f"• <b>Margin Bebas:</b> <code>{acc['margin_free']:,.2f} {acc['currency']}</code>\n"
+                f"• <b>Batas Stop:</b> <code>{stop_str}</code>\n\n"
+                "🎯 <b>Strategi yang Diikuti:</b>\n"
+                f"{strats_list}\n\n"
+                f"📈 <b>Posisi Terbuka MT5:</b> {len(open_pos)} trade (DB: {len(db_open)})"
+            )
+        else:
+            status_msg = "⚠️ Gagal mengambil informasi akun MT5. Terminal sedang offline / reconnecting."
+
+        send_telegram_alert(status_msg, chat_id=chat_id, parse_mode="HTML")
+
+    elif cmd == "/posisi":
+        await handle_posisi_command(arg, chat_id)
+
+
+async def telegram_command_listener() -> None:
+    """Mendengarkan perintah interaktif dari chat Telegram (long-polling getUpdates)."""
+    if not TELEGRAM_BOT_TOKEN:
+        log.warning("TELEGRAM_BOT_TOKEN tidak dikonfigurasi. Telegram listener dinonaktifkan.")
+        return
+
+    # Daftarkan daftar perintah ke BotFather / Menu Telegram
+    try:
+        set_cmd_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMyCommands"
+        commands = [
+            {"command": "posisi", "description": "Cek posisi aktif (cth: /posisi roc_momentum)"},
+            {"command": "status", "description": "Cek saldo MT5, equity & status engine"},
+            {"command": "help", "description": "Panduan perintah bot"},
+        ]
+        async with aiohttp.ClientSession() as session:
+            async with session.post(set_cmd_url, json={"commands": commands}, timeout=5) as resp:
+                if resp.status == 200:
+                    log.info("✓ Menu perintah bot Telegram berhasil didaftarkan ke Telegram API.")
+    except Exception as exc:
+        log.warning("Gagal mendaftarkan menu perintah Telegram: %s", exc)
+
+    poll_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    offset = 0
+
+    # Ambil update terakhir untuk membersihkan antrean pesan lama saat startup
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(poll_url, params={"offset": -1, "timeout": 1}, timeout=5) as resp:
+                if resp.status == 200:
+                    init_data = await resp.json()
+                    res = init_data.get("result", [])
+                    if res:
+                        offset = res[-1]["update_id"] + 1
+    except Exception:
+        pass
+
+    log.info("✓ Telegram interactive command listener aktif! Siap menerima /posisi & /status...")
+
+    while running:
+        try:
+            params = {"offset": offset, "timeout": 20}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(poll_url, params=params, timeout=30) as resp:
+                    if resp.status != 200:
+                        await asyncio.sleep(5)
+                        continue
+                    data = await resp.json()
+
+            if not data.get("ok"):
+                await asyncio.sleep(3)
+                continue
+
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                msg = update.get("message") or update.get("edited_message")
+                if not msg:
+                    continue
+
+                chat = msg.get("chat", {})
+                sender_id = str(chat.get("id", ""))
+                text = msg.get("text", "").strip()
+
+                # Filter pengirim agar hanya pemilik akun Telegram yang direspons
+                if TELEGRAM_CHAT_ID and sender_id != TELEGRAM_CHAT_ID:
+                    log.warning("Pesan diabaikan dari chat_id asing: %s", sender_id)
+                    continue
+
+                if not text.startswith("/"):
+                    continue
+
+                await handle_telegram_command(text, sender_id)
+
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            log.warning("Exception dalam Telegram listener: %s", exc)
+            await asyncio.sleep(3)
 
 
 def handle_shutdown(signum, frame):
@@ -423,10 +679,11 @@ async def main() -> None:
     else:
         log.warning("⚠️ Terminal MT5 belum siap saat startup. Bot akan tetap mencoba menyambung di background.")
 
-    # Jalankan WebSocket listener dan Polling Watchdog secara konkuren
+    # Jalankan WebSocket listener, Polling Watchdog, dan Telegram Command Listener secara konkuren
     tasks = [
         asyncio.create_task(websocket_signal_listener()),
         asyncio.create_task(poll_reconciliation_task()),
+        asyncio.create_task(telegram_command_listener()),
     ]
 
     try:
