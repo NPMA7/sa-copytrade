@@ -468,7 +468,7 @@ async def execute_open_signal(sig: dict, acc_info: dict) -> None:
         return
 
     # 3. Hitung lot size & validasi SL / TP
-    lot = RiskManager.calculate_lot(equity)
+    lot = RiskManager.calculate_lot(equity, signal_lot=sig.get("lot"))
     sym_info = mt5.get_symbol_info(symbol)
     digits = sym_info.get("digits", 5) if sym_info else 5
     point = sym_info.get("point", 0.00001) if sym_info else 0.00001
@@ -787,6 +787,7 @@ async def poll_reconciliation_task() -> None:
                         "stop_loss": p.get("stop_loss"),
                         "take_profit": p.get("take_profit"),
                         "strategy": strat,
+                        "lot": p.get("lot"),
                     }
                     await execute_open_signal(sig_to_open, acc_info)
                     if ALLOW_HEDGING:

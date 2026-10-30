@@ -50,7 +50,7 @@ AUTO_SYNC_PAST_TRADES = os.getenv("AUTO_SYNC_PAST_TRADES", "false").lower() in (
 ALLOW_HEDGING = os.getenv("ALLOW_HEDGING", "true").lower() in ("true", "1", "yes")
 
 # Risk & Money Management (Dirancang untuk modal $1,000 USD)
-LOT_SIZING_MODE = os.getenv("LOT_SIZING_MODE", "FIXED").upper()  # "FIXED" | "PROPORTIONAL"
+LOT_SIZING_MODE = os.getenv("LOT_SIZING_MODE", "PROPORTIONAL").upper()  # "PROPORTIONAL" | "FIXED" | "EQUITY_SCALE"
 BASE_LOT = float(os.getenv("BASE_LOT", "0.01"))
 MAX_LOT = float(os.getenv("MAX_LOT", "0.05"))
 MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "3"))

@@ -23,19 +23,39 @@ class RiskManager:
     """Mengawal eksekusi transaksi pada akun riil $1,000 USD agar tahan banting dan terproteksi."""
 
     @staticmethod
-    def calculate_lot(equity: float, sl_points: float = 0.0) -> float:
-        """Menghitung lot size yang aman untuk modal $1,000 USD."""
-        if LOT_SIZING_MODE == "PROPORTIONAL":
-            # Skala lot proporsional terhadap modal awal $1,000
-            scale = max(0.5, equity / 1000.0)
-            lot = round(BASE_LOT * scale, 2)
-        else:
-            # Mode "FIXED": Selalu gunakan 0.01 micro-lot (rekomendasi untuk $1k)
-            lot = BASE_LOT
+    def calculate_lot(equity: float, signal_lot: Optional[float] = None) -> float:
+        """Menghitung lot size untuk eksekusi order MT5 berdasarkan mode sizing.
 
-        # Clamp ketat ke batas aman
-        lot = max(0.01, min(lot, MAX_LOT))
-        return lot
+        - "PROPORTIONAL": Mengikuti kalkulasi lot dari strategi di Strategy Arena (1:1),
+          dibatasi dengan aman oleh BASE_LOT (sebagai batas minimum) dan MAX_LOT (sebagai batas maksimum).
+        - "FIXED": Selalu menggunakan BASE_LOT secara konstan (default 0.01 lot).
+        - "EQUITY_SCALE": Skala ukuran lot proporsional terhadap rasio equity akun / $1,000.
+        """
+        strat_lot = None
+        if signal_lot is not None:
+            try:
+                val = float(signal_lot)
+                if val > 0:
+                    strat_lot = val
+            except (ValueError, TypeError):
+                strat_lot = None
+
+        if LOT_SIZING_MODE == "FIXED":
+            lot = BASE_LOT
+        elif LOT_SIZING_MODE == "EQUITY_SCALE":
+            target = strat_lot if strat_lot is not None else BASE_LOT
+            scale = max(0.1, equity / 1000.0)
+            lot = round(target * scale, 2)
+        else:
+            # Mode "PROPORTIONAL" (Default & Rekomendasi):
+            # Salin ukuran lot strategi (misal XTIUSD 0.05 lot, XAUUSD 0.01 lot, EURUSD 0.03 lot)
+            lot = strat_lot if strat_lot is not None else BASE_LOT
+
+        # Clamp ketat ke batas aman [BASE_LOT, MAX_LOT]
+        min_allowed = min(BASE_LOT, MAX_LOT)
+        max_allowed = max(BASE_LOT, MAX_LOT)
+        lot = max(min_allowed, min(lot, max_allowed))
+        return round(lot, 2)
 
     @staticmethod
     def is_equity_halted(equity: float) -> bool:

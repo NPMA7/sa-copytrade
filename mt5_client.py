@@ -359,6 +359,7 @@ def _send_close_order(t, comment):
                     return {{
                         "ok": True,
                         "already_closed": True,
+                        "symbol": str(getattr(d, "symbol", "")),
                         "price": float(d.price),
                         "profit": float(d.profit),
                         "comment": str(d.comment),
@@ -367,6 +368,7 @@ def _send_close_order(t, comment):
             return {{
                 "ok": True,
                 "already_closed": True,
+                "symbol": str(getattr(last, "symbol", "")),
                 "price": float(last.price),
                 "profit": float(last.profit),
                 "comment": str(last.comment),
@@ -401,6 +403,7 @@ def _send_close_order(t, comment):
         if res and res.retcode == mt5.TRADE_RETCODE_DONE:
             return {{
                 "ok": True,
+                "symbol": str(p.symbol),
                 "price": float(res.price or price),
                 "profit": float(p.profit),
                 "comment": str(res.comment or comment),
@@ -416,14 +419,15 @@ def _send_close_order(t, comment):
 """)
             res = self.conn.eval(f"_send_close_order({ticket}, {repr(comment)})")
             if res.get("ok"):
+                pos_sym = res.get("symbol", "")
                 close_price = res.get("price", 0.0)
                 profit = res.get("profit", 0.0)
                 deal_cm = res.get("comment", "")
                 if res.get("already_closed"):
                     log.info("🏁 POSISI TELAH DITUTUP BROKER (SL/TP)! Ticket #%s @ %s | Profit: $%.2f | Catatan: %s",
-                             ticket, format_price(close_price, broker_sym), profit, deal_cm)
+                             ticket, format_price(close_price, pos_sym), profit, deal_cm)
                 else:
-                    log.info("🏁 POSISI DITUTUP MT5! Ticket #%s @ %s | Profit: $%.2f", ticket, format_price(close_price, broker_sym), profit)
+                    log.info("🏁 POSISI DITUTUP MT5! Ticket #%s @ %s | Profit: $%.2f", ticket, format_price(close_price, pos_sym), profit)
                 return True, close_price, profit, deal_cm or "SUCCESS"
             else:
                 err_msg = res.get("error", "Gagal menutup posisi di MT5")
