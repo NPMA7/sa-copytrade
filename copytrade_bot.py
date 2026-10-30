@@ -43,7 +43,7 @@ running = True
 mt5 = MT5Client()
 
 
-def send_telegram_alert(message: str, chat_id: Optional[str] = None, parse_mode: str = "HTML") -> None:
+def send_telegram_alert(message: str, chat_id: Optional[str] = None, parse_mode: str = "Markdown") -> None:
     """Mengirim notifikasi Telegram jika token dan chat_id dikonfigurasi."""
     target_chat = chat_id or TELEGRAM_CHAT_ID
     if not TELEGRAM_BOT_TOKEN or not target_chat:
@@ -55,10 +55,10 @@ def send_telegram_alert(message: str, chat_id: Optional[str] = None, parse_mode:
             "text": message,
             "parse_mode": parse_mode,
         }
-        res = requests.post(url, json=payload, timeout=5)
+        res = requests.post(url, json=payload, timeout=8)
         if res.status_code != 200:
             # Fallback tanpa parsing jika ada tag tidak valid
-            requests.post(url, json={"chat_id": target_chat, "text": message}, timeout=5)
+            requests.post(url, json={"chat_id": target_chat, "text": message}, timeout=8)
     except Exception as exc:
         log.warning("Gagal mengirim Telegram alert: %s", exc)
 
@@ -582,12 +582,27 @@ async def execute_close_signal(sig: dict, acc_info: dict) -> None:
     log.info("🏁 MENUTUP POSISI: Ticket #%s (%s - %s) karena sinyal %s", ticket_to_close, symbol, strat_title, action)
     ok, close_price, profit, err = mt5.close_position(ticket_to_close, comment=f"SA:{action}")
 
-    if ok:
+    deal_info = None
+    if not ok:
+        deal_info = mt5.get_closed_deal_info(ticket_to_close)
+
+    if ok or deal_info:
+        if not ok and deal_info:
+            close_price = deal_info.get("price") or (db_pos.get("open_price", 0.0) if db_pos else 0.0)
+            profit = deal_info.get("profit", 0.0)
+            err = deal_info.get("comment", "")
+
+        close_reason = action
+        if "[sl" in str(err).lower() or action == "CLOSE_SL":
+            close_reason = "CLOSE_SL"
+        elif "[tp" in str(err).lower() or action == "CLOSE_TP":
+            close_reason = "CLOSE_TP"
+
         trade_storage.record_close(
             ticket=ticket_to_close,
             close_price=close_price,
             pnl=profit,
-            close_reason=action,
+            close_reason=close_reason,
         )
         pnl_symbol = "🟢" if profit >= 0 else "🔴"
         msg = (
@@ -596,7 +611,7 @@ async def execute_close_signal(sig: dict, acc_info: dict) -> None:
             f"• Simbol: `{symbol}`\n"
             f"• Harga Tutup: `{close_price:.5f}`\n"
             f"• Realized PnL: *${profit:+.2f}*\n"
-            f"• Alasan: `{action}`\n"
+            f"• Alasan: `{close_reason}`\n"
             f"• Tiket: `#{ticket_to_close}`"
         )
         send_telegram_alert(msg)
@@ -669,13 +684,41 @@ async def poll_reconciliation_task() -> None:
             # 3. Cek apakah ada posisi MT5 yang sudah ditutup langsung oleh broker (misal hit hard SL/TP)
             for pos in db_open_positions:
                 if pos["ticket"] not in active_tickets:
-                    log.info("🔍 REKONSILIASI: Ticket #%s (%s - %s) telah ditutup di MT5 (Hit SL/TP).", pos["ticket"], pos["symbol"], pos.get("strategy"))
+                    ticket_num = pos["ticket"]
+                    sym = pos["symbol"]
+                    strat = pos.get("strategy")
+                    strat_title = STRATEGY_NAMES_MAP.get(strat, strat or TARGET_STRATEGY_NAME)
+                    log.info("🔍 REKONSILIASI: Ticket #%s (%s - %s) telah ditutup di MT5 (Hit SL/TP).", ticket_num, sym, strat)
+
+                    deal = mt5.get_closed_deal_info(ticket_num)
+                    close_price = deal.get("price") if deal else pos.get("open_price", 0.0)
+                    profit = deal.get("profit") if deal else 0.0
+                    deal_cm = deal.get("comment", "") if deal else ""
+
+                    close_reason = "BROKER_SL_TP"
+                    if "[sl" in deal_cm.lower():
+                        close_reason = "CLOSE_SL"
+                    elif "[tp" in deal_cm.lower():
+                        close_reason = "CLOSE_TP"
+
                     trade_storage.record_close(
-                        ticket=pos["ticket"],
-                        close_price=pos["open_price"],
-                        pnl=0.0,
-                        close_reason="BROKER_SL_TP",
+                        ticket=ticket_num,
+                        close_price=close_price,
+                        pnl=profit,
+                        close_reason=close_reason,
                     )
+
+                    pnl_symbol = "🟢" if profit >= 0 else "🔴"
+                    msg = (
+                        f"{pnl_symbol} *SA COPY-TRADE: POSISI DITUTUP (BROKER SL/TP)*\n"
+                        f"• Strategi: `{strat_title}`\n"
+                        f"• Simbol: `{sym}`\n"
+                        f"• Harga Tutup: `{close_price:.5f}`\n"
+                        f"• Realized PnL: *${profit:+.2f}*\n"
+                        f"• Alasan: `{close_reason}`\n"
+                        f"• Tiket: `#{ticket_num}`"
+                    )
+                    send_telegram_alert(msg)
 
             # Re-fetch setelah update status broker
             db_open_positions = trade_storage.get_all_open_positions()

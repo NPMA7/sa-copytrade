@@ -295,6 +295,46 @@ def _send_open_order(sym, order_type, vol, price, sl, tp, magic, comment):
             log.error("Exception saat open_position: %s", exc)
             return False, 0, 0.0, str(exc)
 
+    def get_closed_deal_info(self, position_ticket: int) -> Optional[dict]:
+        """Mengambil data hasil penutupan posisi (deal entry=OUT) dari riwayat MT5."""
+        if not self.ensure_connected():
+            return None
+        try:
+            self.conn.execute("""
+def _get_closed_deal(pos_ticket):
+    import MetaTrader5 as mt5
+    deals = mt5.history_deals_get(position=int(pos_ticket))
+    if not deals:
+        return None
+    for d in reversed(deals):
+        if int(d.entry) == 1:  # DEAL_ENTRY_OUT
+            return {
+                "deal_ticket": int(d.ticket),
+                "order": int(d.order),
+                "price": float(d.price),
+                "profit": float(d.profit),
+                "swap": float(d.swap),
+                "commission": float(d.commission),
+                "comment": str(d.comment),
+                "time": int(d.time),
+            }
+    last = deals[-1]
+    return {
+        "deal_ticket": int(last.ticket),
+        "order": int(last.order),
+        "price": float(last.price),
+        "profit": float(last.profit),
+        "swap": float(last.swap),
+        "commission": float(last.commission),
+        "comment": str(last.comment),
+        "time": int(last.time),
+    }
+""")
+            return self.conn.eval(f"_get_closed_deal({position_ticket})")
+        except Exception as exc:
+            log.warning("Gagal mengambil data deal history untuk ticket #%s: %s", position_ticket, exc)
+            return None
+
     def close_position(
         self,
         ticket: int,
@@ -310,6 +350,26 @@ def _send_close_order(t, comment):
     import MetaTrader5 as mt5
     pos = mt5.positions_get(ticket=t)
     if not pos or len(pos) == 0:
+        # Cek apakah posisi ini baru saja ditutup langsung oleh broker (misal hit hard SL/TP)
+        deals = mt5.history_deals_get(position=int(t))
+        if deals:
+            for d in reversed(deals):
+                if int(d.entry) == 1:
+                    return {{
+                        "ok": True,
+                        "already_closed": True,
+                        "price": float(d.price),
+                        "profit": float(d.profit),
+                        "comment": str(d.comment),
+                    }}
+            last = deals[-1]
+            return {{
+                "ok": True,
+                "already_closed": True,
+                "price": float(last.price),
+                "profit": float(last.profit),
+                "comment": str(last.comment),
+            }}
         return {{"ok": False, "error": f"Ticket {{t}} tidak ditemukan atau sudah tertutup"}}
 
     p = pos[0]
@@ -342,6 +402,7 @@ def _send_close_order(t, comment):
                 "ok": True,
                 "price": float(res.price or price),
                 "profit": float(p.profit),
+                "comment": str(res.comment or comment),
             }}
         elif res:
             last_err = f"retcode={{res.retcode}}: {{res.comment}}"
@@ -356,8 +417,13 @@ def _send_close_order(t, comment):
             if res.get("ok"):
                 close_price = res.get("price", 0.0)
                 profit = res.get("profit", 0.0)
-                log.info("🏁 POSISI DITUTUP MT5! Ticket #%s @ %.5f | Profit: $%.2f", ticket, close_price, profit)
-                return True, close_price, profit, "SUCCESS"
+                deal_cm = res.get("comment", "")
+                if res.get("already_closed"):
+                    log.info("🏁 POSISI TELAH DITUTUP BROKER (SL/TP)! Ticket #%s @ %.5f | Profit: $%.2f | Catatan: %s",
+                             ticket, close_price, profit, deal_cm)
+                else:
+                    log.info("🏁 POSISI DITUTUP MT5! Ticket #%s @ %.5f | Profit: $%.2f", ticket, close_price, profit)
+                return True, close_price, profit, deal_cm or "SUCCESS"
             else:
                 err_msg = res.get("error", "Gagal menutup posisi di MT5")
                 log.warning("Gagal close ticket #%s: %s", ticket, err_msg)
