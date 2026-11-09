@@ -48,6 +48,36 @@ def init_db() -> None:
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_trades_open_time ON trades(open_time);
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
+        """)
+        conn.commit()
+
+
+def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    """Mengambil konfigurasi persisten bot dari SQLite."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT value FROM bot_settings WHERE key = ?", (key,)).fetchone()
+        if row:
+            return row["value"]
+    return default
+
+
+def set_setting(key: str, value: str) -> None:
+    """Menyimpan konfigurasi persisten bot ke SQLite."""
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO bot_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            (key, value, time.time()),
+        )
         conn.commit()
 
 

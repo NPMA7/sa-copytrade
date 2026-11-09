@@ -40,7 +40,10 @@ def show_status():
     table.add_column("Parameter", style="dim", width=25)
     table.add_column("Nilai / Keterangan", style="bold")
 
-    table.add_row("Target Strategi", f"{TARGET_STRATEGY_NAME} (`{', '.join(TARGET_STRATEGIES)}`)")
+    stored_strats = trade_storage.get_setting("target_strategies")
+    active_strats = [s.strip() for s in stored_strats.split(",") if s.strip()] if stored_strats else list(TARGET_STRATEGIES)
+
+    table.add_row("Target Strategi", f"`{', '.join(active_strats)}`")
     table.add_row("Mode Pasar", TARGET_MODE.upper())
     stop_text = f"${MIN_EQUITY_USD:,.2f}" if MIN_EQUITY_USD > 0 else "$0.00 (Trading sampai saldo habis)"
     table.add_row("Emergency Equity Stop", stop_text)
@@ -101,8 +104,10 @@ def test_signal():
     """Menguji koneksi feed sinyal ke Strategy Arena."""
     console.print(f"Menguji koneksi ke Strategy Arena ({ARENA_BASE_URL})...")
     url = f"{ARENA_BASE_URL}/api/v1/signals/positions"
+    stored_strats = trade_storage.get_setting("target_strategies")
+    active_strats = [s.strip() for s in stored_strats.split(",") if s.strip()] if stored_strats else list(TARGET_STRATEGIES)
     params = {
-        "strategy": TARGET_STRATEGIES_QUERY,
+        "strategy": ",".join(active_strats),
         "mode": TARGET_MODE,
         "api_key": ARENA_API_KEY,
     }

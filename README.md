@@ -52,6 +52,19 @@ Bot dilengkapi antarmuka Telegram dua arah (notifikasi otomatis + command intera
 - Anda dapat memantau grafik live, saldo, dan posisi floating langsung melalui browser pada **port 3002**:
   👉 **`http://<IP_SERVER>:3002/`**
 
+### 5. Remote Control & Pengaturan Strategi via Telegram Bot
+Pengaturan strategi tidak lagi terpaku pada file `.env`. Anda dapat mengatur strategi langsung dari chat Telegram secara real-time:
+- **`/strategi`**: Membuka antarmuka menu interaktif dengan tombol inline keyboard untuk toggle aktif/nonaktif strategi favorit (Gap Fill, ROC Momentum, EMA Dev, Z-Score, SuperTrend, BB Rev).
+- **`/set_strategi <id>`**: Mengganti strategi target langsung via teks (contoh: `/set_strategi gap_fill,roc_momentum`).
+- **`/tambah_strategi <id>`**: Menambahkan strategi baru ke pantauan bot tanpa menghapus strategi sebelumnya.
+- **`/hapus_strategi <id>`**: Menghapus strategi dari pantauan bot.
+- **`/daftar_strategi`**: Menampilkan peringkat 10 besar performa strategi di Strategy Arena Forex beserta win rate dan jumlah transaksinya.
+- **`/my_posisi`**: Mengecek seluruh order terbuka riil di akun MetaTrader 5 Anda beserta Floating PnL.
+- **`/posisi`**: Mengecek posisi terbuka di Strategy Arena untuk strategi yang Anda ikuti.
+- **`/status`**: Mengecek ringkasan saldo akun, equity, margin bebas, dan daftar strategi yang sedang aktif.
+
+Seluruh perubahan strategi disimpan secara persisten di SQLite (`copytrade.db`) dan koneksi WebSocket stream sinyal langsung di-reconnect secara otomatis ke strategi baru!
+
 ---
 
 ## 📂 Struktur Direktori
