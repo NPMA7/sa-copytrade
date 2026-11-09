@@ -5,7 +5,10 @@ services:
     image: lprett/mt5linux:latest
     container_name: sa-cp-mt5
     restart: unless-stopped
-    entrypoint: ["/bin/sh", "-c", "rm -f /opt/wineprefix/drive_c/server; exec /app/src/main.sh"]
+    entrypoint: ["/entrypoint.sh"]
+    volumes:
+      - ./docker/entrypoint.sh:/entrypoint.sh:ro
+      - ./docker/servers.dat:/opt/servers.dat:ro
     ports:
       - "127.0.0.1:18813:18812"
       - "0.0.0.0:5902:5901"
