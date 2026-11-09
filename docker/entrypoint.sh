@@ -29,4 +29,8 @@ fi
   xdotool key ctrl+e
 ) &
 
+if [ -n "$MT5_VNC_PASSWORD" ] && [ -z "$UI_PASSWORD" ]; then
+  export UI_PASSWORD="$MT5_VNC_PASSWORD"
+fi
+
 exec /app/src/main.sh
