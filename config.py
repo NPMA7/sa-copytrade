@@ -75,7 +75,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Logger Setup
-def setup_logger(name: str = "sa-copytrade") -> logging.Logger:
+def setup_logger(name: str = "sa-cp") -> logging.Logger:
     logger = logging.getLogger(name)
     log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
     logger.setLevel(log_level)

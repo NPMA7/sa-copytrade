@@ -1,9 +1,9 @@
-name: sa-copytrade
+name: sa-cp
 
 services:
   mt5-real:
     image: lprett/mt5linux:latest
-    container_name: sa-copytrade-mt5
+    container_name: sa-cp-mt5
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c", "rm -f /opt/wineprefix/drive_c/server; exec /app/src/main.sh"]
     ports:
@@ -20,7 +20,7 @@ services:
 
   novnc-proxy:
     image: nginx:alpine
-    container_name: sa-copytrade-novnc
+    container_name: sa-cp-novnc
     restart: unless-stopped
     depends_on:
       - mt5-real
@@ -33,8 +33,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: sa-copytrade-bot:latest
-    container_name: sa-copytrade-bot
+    image: sa-cp-bot:latest
+    container_name: sa-cp-bot
     restart: unless-stopped
     depends_on:
       - mt5-real

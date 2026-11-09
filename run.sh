@@ -36,7 +36,7 @@ check_env() {
         echo -e "${RED}${BOLD}[PERINGATAN KRUSIAL]${NC}"
         echo -e "${YELLOW}Kata sandi akun MetaTrader 5 belum diatur di file .env!${NC}"
         echo -e "Silakan buka dan edit file .env terlebih dahulu:"
-        echo -e "  ${BOLD}nano /var/www/sa-copytrade/.env${NC}"
+        echo -e "  ${BOLD}nano /var/www/sa/sa-cp/.env${NC}"
         echo -e "Ubah baris ${BOLD}MT5_PASSWORD=...${NC} dengan kata sandi akun Anda."
         echo ""
         read -p "Apakah Anda ingin melanjutkan sekarang? [y/N]: " confirm
@@ -96,7 +96,7 @@ cmd_status() {
     docker compose ps
     echo ""
     # Coba jalankan CLI status di dalam container bot jika sedang jalan
-    if docker ps --format '{{.Names}}' | grep -q "sa-copytrade-bot"; then
+    if docker ps --format '{{.Names}}' | grep -q "sa-cp-bot"; then
         echo -e "${CYAN}Status Akun & Posisi Terbuka:${NC}"
         docker compose exec bot python cli.py status || true
     fi

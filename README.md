@@ -57,7 +57,7 @@ Bot dilengkapi antarmuka Telegram dua arah (notifikasi otomatis + command intera
 ## 📂 Struktur Direktori
 
 ```text
-/var/www/sa-copytrade/
+/var/www/sa/sa-cp/
 ├── .env.example              # Template konfigurasi environment
 ├── .env                      # File konfigurasi aktif (kredensial broker & Telegram)
 ├── docker-compose.yml        # Definisi service Docker MT5 Real + Python Bot Daemon
