@@ -599,6 +599,7 @@ async def handle_my_posisi_command(chat_id: str) -> None:
         lines.append(
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Total Floating PnL:</b> <code>{pnl_sign}${total_profit:.2f} USD</code>\n"
+            f"• <b>Saldo MT5:</b> <code>${acc.get('balance', 0.0):.2f} USD</code>\n"
             f"• <b>Equity MT5:</b> <code>${acc.get('equity', 0.0):.2f} USD</code>\n"
             f"• <b>Free Margin:</b> <code>${acc.get('margin_free', 0.0):.2f} USD</code>"
         )
