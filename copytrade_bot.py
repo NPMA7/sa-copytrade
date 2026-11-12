@@ -7,12 +7,19 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import re
 import signal
+import socket
 import sys
+import threading
 import time
 from typing import Optional
 import aiohttp
 import requests
+import urllib3.util.connection
+
+# Pastikan koneksi ke api.telegram.org di dalam Docker memprioritaskan IPv4 (menghindari hang IPv6)
+urllib3.util.connection.allowed_gai_family = lambda: socket.AF_INET
 
 from config import (
     ARENA_BASE_URL,
@@ -30,6 +37,7 @@ from config import (
     POLL_INTERVAL_SEC,
     MT5_MAGIC_NUMBER,
     MIN_EQUITY_USD,
+    MAX_DAILY_LOSS_USD,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
     log,
@@ -46,8 +54,21 @@ mt5 = MT5Client()
 ACTIVE_STRATEGIES: list[str] = []
 ACTIVE_STRATEGIES_SET: set[str] = set()
 ARENA_STRATEGIES_CACHE: dict[str, dict] = {}
+_ARENA_CACHE_UPDATED_AT: float = 0.0
 active_ws_session: Optional[aiohttp.ClientWebSocketResponse] = None
 ws_reconnect_needed: bool = False
+_ALERT_COOLDOWN: dict[str, float] = {}
+_RECONCILE_SKIP_LOGGED: set[tuple[str, str, str, int]] = set()
+_TG_THREAD_LOCAL = threading.local()
+
+
+def _get_tg_session() -> requests.Session:
+    """Mengembalikan requests.Session khusus per-thread agar TCP/TLS keep-alive ke Telegram tetap hangat."""
+    sess = getattr(_TG_THREAD_LOCAL, "session", None)
+    if sess is None:
+        sess = requests.Session()
+        _TG_THREAD_LOCAL.session = sess
+    return sess
 
 
 def load_initial_strategies() -> list[str]:
@@ -101,14 +122,16 @@ def set_active_strategies(strats: list[str]) -> None:
             pass
 
 
-async def refresh_arena_strategies_cache() -> dict[str, dict]:
-    """Mengambil metadata dan ranking strategi dari Strategy Arena API."""
-    global ARENA_STRATEGIES_CACHE
+async def refresh_arena_strategies_cache(force: bool = False) -> dict[str, dict]:
+    """Mengambil metadata dan ranking strategi dari Strategy Arena API (dengan TTL cache 60 detik)."""
+    global ARENA_STRATEGIES_CACHE, _ARENA_CACHE_UPDATED_AT
+    if not force and ARENA_STRATEGIES_CACHE and (time.time() - _ARENA_CACHE_UPDATED_AT) < 60.0:
+        return ARENA_STRATEGIES_CACHE
     url = f"{ARENA_BASE_URL}/api/v1/signals/strategies"
     params = {"mode": TARGET_MODE, "api_key": ARENA_API_KEY}
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=6) as resp:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(family=socket.AF_INET), timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.get(url, params=params) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     strats = data.get("strategies", [])
@@ -119,9 +142,10 @@ async def refresh_arena_strategies_cache() -> dict[str, dict]:
                             new_cache[sid] = s
                     if new_cache:
                         ARENA_STRATEGIES_CACHE = new_cache
+                        _ARENA_CACHE_UPDATED_AT = time.time()
                         log.info("✓ Cache strategi Strategy Arena diperbarui: %d strategi ditemukan", len(ARENA_STRATEGIES_CACHE))
     except Exception as exc:
-        log.warning("Gagal refresh cache strategi dari Strategy Arena: %s", exc)
+        log.warning("Gagal refresh cache strategi dari Strategy Arena: %r", exc)
     return ARENA_STRATEGIES_CACHE
 
 
@@ -132,37 +156,75 @@ def get_strategy_display_name(sid: str) -> str:
     return STRATEGY_NAMES_MAP.get(sid, sid)
 
 
+def _send_telegram_sync(
+    message: str,
+    chat_id: Optional[str] = None,
+    parse_mode: str = "Markdown",
+    reply_markup: Optional[dict] = None,
+) -> Optional[int]:
+    """Kirim pesan Telegram secara sinkron dengan retry otomatis dan backoff."""
+    target_chat = chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_BOT_TOKEN or not target_chat:
+        return None
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": target_chat,
+        "text": message,
+        "parse_mode": parse_mode,
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            sess = _get_tg_session()
+            res = sess.post(url, json=payload, timeout=(20, 25))
+            if res.status_code != 200 and res.status_code < 500:
+                fallback_payload = {"chat_id": target_chat, "text": message}
+                if reply_markup:
+                    fallback_payload["reply_markup"] = reply_markup
+                res = sess.post(url, json=fallback_payload, timeout=(20, 25))
+            if res.status_code == 200:
+                return res.json().get("result", {}).get("message_id")
+            last_exc = RuntimeError(f"HTTP {res.status_code}: {res.text[:160]}")
+        except Exception as exc:
+            last_exc = exc
+            # Reset session pada thread ini jika koneksi terputus
+            _TG_THREAD_LOCAL.session = None
+        if attempt < 2:
+            time.sleep(1.5 * (attempt + 1))
+
+    safe_err = re.sub(r"bot[0-9]+:[A-Za-z0-9_-]+", "bot<REDACTED>", repr(last_exc))
+    log.warning("Gagal mengirim Telegram alert setelah 3 percobaan: %s", safe_err)
+    return None
+
+
 def send_telegram_alert(
     message: str,
     chat_id: Optional[str] = None,
     parse_mode: str = "Markdown",
     reply_markup: Optional[dict] = None,
 ) -> Optional[int]:
-    """Mengirim notifikasi Telegram dengan dukungan inline keyboard dan fallback."""
+    """Mengirim notifikasi Telegram tanpa memblokir event loop asyncio (dengan retry otomatis)."""
     target_chat = chat_id or TELEGRAM_CHAT_ID
     if not TELEGRAM_BOT_TOKEN or not target_chat:
         return None
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": target_chat,
-            "text": message,
-            "parse_mode": parse_mode,
-        }
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-        res = requests.post(url, json=payload, timeout=8)
-        if res.status_code != 200:
-            # Fallback tanpa parsing jika ada tag markdown/html tidak valid
-            fallback_payload = {"chat_id": target_chat, "text": message}
-            if reply_markup:
-                fallback_payload["reply_markup"] = reply_markup
-            res = requests.post(url, json=fallback_payload, timeout=8)
-        if res.status_code == 200:
-            return res.json().get("result", {}).get("message_id")
-    except Exception as exc:
-        log.warning("Gagal mengirim Telegram alert: %s", exc)
-    return None
+        loop = asyncio.get_running_loop()
+        loop.create_task(asyncio.to_thread(_send_telegram_sync, message, target_chat, parse_mode, reply_markup))
+        return None
+    except RuntimeError:
+        return _send_telegram_sync(message, target_chat, parse_mode, reply_markup)
+
+
+def _send_throttled_warning(key: str, message: str, cooldown_sec: float = 900.0) -> None:
+    """Mengirim peringatan ke Telegram maksimal sekali per interval cooldown agar tidak spam."""
+    now = time.time()
+    last = _ALERT_COOLDOWN.get(key, 0.0)
+    if (now - last) >= cooldown_sec:
+        _ALERT_COOLDOWN[key] = now
+        send_telegram_alert(message)
 
 
 def edit_telegram_message(
@@ -175,26 +237,34 @@ def edit_telegram_message(
     """Mengedit teks dan tombol pesan Telegram secara in-place."""
     if not TELEGRAM_BOT_TOKEN or not chat_id or not message_id:
         return False
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
-        payload = {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "text": text,
-            "parse_mode": parse_mode,
-        }
-        if reply_markup is not None:
-            payload["reply_markup"] = reply_markup
-        res = requests.post(url, json=payload, timeout=8)
-        if res.status_code != 200:
-            fallback = {"chat_id": chat_id, "message_id": message_id, "text": text}
-            if reply_markup is not None:
-                fallback["reply_markup"] = reply_markup
-            res = requests.post(url, json=fallback, timeout=8)
-        return res.status_code == 200
-    except Exception as exc:
-        log.warning("Gagal mengedit pesan Telegram: %s", exc)
-        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": parse_mode,
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    for attempt in range(2):
+        try:
+            sess = _get_tg_session()
+            res = sess.post(url, json=payload, timeout=(20, 20))
+            if res.status_code != 200 and res.status_code < 500:
+                if "message is not modified" in res.text.lower():
+                    return True
+                fallback = {"chat_id": chat_id, "message_id": message_id, "text": text}
+                if reply_markup is not None:
+                    fallback["reply_markup"] = reply_markup
+                res = sess.post(url, json=fallback, timeout=(20, 20))
+            if res.status_code == 200:
+                return True
+        except Exception as exc:
+            _TG_THREAD_LOCAL.session = None
+            if attempt == 1:
+                safe_err = re.sub(r"bot[0-9]+:[A-Za-z0-9_-]+", "bot<REDACTED>", repr(exc))
+                log.warning("Gagal mengedit pesan Telegram: %s", safe_err)
+    return False
 
 
 def answer_callback_query(
@@ -211,38 +281,64 @@ def answer_callback_query(
         if text:
             payload["text"] = text
             payload["show_alert"] = show_alert
-        res = requests.post(url, json=payload, timeout=5)
+        res = _get_tg_session().post(url, json=payload, timeout=(20, 15))
         return res.status_code == 200
     except Exception as exc:
-        log.warning("Gagal answerCallbackQuery: %s", exc)
+        _TG_THREAD_LOCAL.session = None
+        safe_err = re.sub(r"bot[0-9]+:[A-Za-z0-9_-]+", "bot<REDACTED>", repr(exc))
+        log.warning("Gagal answerCallbackQuery: %s", safe_err)
         return False
 
 
-def build_strategy_menu_keyboard() -> dict:
-    """Membangun inline keyboard interaktif untuk toggle strategi langsung dari Telegram."""
+def _get_sorted_arena_strategies() -> list[dict]:
+    """Mengambil seluruh strategi Arena terurut berdasar win rate & return (atau fallback cache statis)."""
+    if ARENA_STRATEGIES_CACHE:
+        return sorted(
+            ARENA_STRATEGIES_CACHE.values(),
+            key=lambda x: (x.get("win_rate_pct", 0), x.get("return_pct", 0)),
+            reverse=True,
+        )
+    return [{"strategy": sid, "name": sname, "win_rate_pct": 0.0, "trades": 0, "return_pct": 0.0} for sid, sname in STRATEGY_NAMES_MAP.items()]
+
+
+def build_strategy_menu_keyboard(page: int = 0, per_page: int = 10) -> dict:
+    """Membangun inline keyboard interaktif berhalaman untuk toggle seluruh strategi dari Telegram."""
     cur_set = set(get_active_strategies())
-    featured = [
-        ("gap_fill", "Gap Fill"),
-        ("roc_momentum", "ROC Mom"),
-        ("price_ema_dev", "EMA Dev"),
-        ("zscore_rev", "Z-Score"),
-        ("supertrend", "SuperTrend"),
-        ("bb_rev", "BB Rev"),
-    ]
+    all_strats = _get_sorted_arena_strategies()
+    total = len(all_strats)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    page_items = all_strats[page * per_page : (page + 1) * per_page]
+
     keyboard = []
     row = []
-    for sid, label in featured:
-        is_active = sid in cur_set
-        icon = "✅" if is_active else "⬜"
-        row.append({
-            "text": f"{icon} {label}",
-            "callback_data": f"strat:toggle:{sid}",
-        })
+    for s in page_items:
+        sid = s.get("strategy", "")
+        if not sid:
+            continue
+        raw_name = s.get("name") or sid
+        short_label = raw_name if len(raw_name) <= 18 else (raw_name[:17] + "…")
+        icon = "✅" if sid in cur_set else "⬜"
+        # Batasi callback_data agar tetap <= 64 byte sesuai limit Telegram Bot API
+        cb_data = f"strat:toggle:{sid}:{page}"
+        if len(cb_data.encode("utf-8")) > 64:
+            cb_data = f"strat:toggle:{sid}"
+        row.append({"text": f"{icon} {short_label}", "callback_data": cb_data})
         if len(row) == 2:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
+
+    # Baris paginasi Previous / Next untuk menjelajahi semua strategi
+    if total_pages > 1:
+        nav_row = []
+        if page > 0:
+            nav_row.append({"text": "⬅️ Prev", "callback_data": f"strat:page:{page - 1}"})
+        nav_row.append({"text": f"📄 {page + 1}/{total_pages} ({total})", "callback_data": "strat:noop"})
+        if page < total_pages - 1:
+            nav_row.append({"text": "Next ➡️", "callback_data": f"strat:page:{page + 1}"})
+        keyboard.append(nav_row)
 
     # Preset & Navigasi
     keyboard.append([
@@ -250,8 +346,8 @@ def build_strategy_menu_keyboard() -> dict:
         {"text": "⭐ Top 5 Performa", "callback_data": "strat:preset:top5"},
     ])
     keyboard.append([
-        {"text": "📊 10 Besar Arena", "callback_data": "strat:leaderboard"},
-        {"text": "🔄 Refresh", "callback_data": "strat:refresh"},
+        {"text": "📊 Daftar & Peringkat", "callback_data": "strat:leaderboard"},
+        {"text": "🔄 Refresh", "callback_data": f"strat:refresh:{page}"},
     ])
     return {"inline_keyboard": keyboard}
 
@@ -349,14 +445,15 @@ async def handle_posisi_command(arg: str, chat_id: str) -> None:
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api_url, params=params, timeout=5) as resp:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(family=socket.AF_INET), timeout=aiohttp.ClientTimeout(total=25)) as session:
+            async with session.get(api_url, params=params) as resp:
                 if resp.status != 200:
                     send_telegram_alert(f"⚠️ Gagal menghubungi Strategy Arena API (HTTP {resp.status})", chat_id=chat_id)
                     return
                 data = await resp.json()
     except Exception as exc:
-        send_telegram_alert(f"⚠️ Error mengambil posisi dari Strategy Arena: {exc}", chat_id=chat_id)
+        err_str = str(exc) or type(exc).__name__
+        send_telegram_alert(f"⚠️ Error mengambil posisi dari Strategy Arena: {err_str}", chat_id=chat_id)
         return
 
     arena_positions = data.get("positions", [])
@@ -636,35 +733,22 @@ async def handle_hapus_strategi_command(arg: str, chat_id: str) -> None:
     send_telegram_alert(msg, chat_id=chat_id, parse_mode="HTML")
 
 
-async def handle_daftar_strategi_command(chat_id: str) -> None:
-    """Menampilkan peringkat strategi terbaik dari Strategy Arena."""
-    await refresh_arena_strategies_cache()
-    if not ARENA_STRATEGIES_CACHE:
-        msg = (
-            "📋 <b>Daftar Strategi Unggulan (Offline Cache):</b>\n\n"
-            "1. <b>Gap Fill Reversal</b> (<code>gap_fill</code>) - Mean Reversion\n"
-            "2. <b>ROC Momentum 12</b> (<code>roc_momentum</code>) - Momentum\n"
-            "3. <b>EMA Deviation</b> (<code>price_ema_dev</code>) - Statistical\n"
-            "4. <b>Z-Score Reversion</b> (<code>zscore_rev</code>) - Mean Reversion\n"
-            "5. <b>SuperTrend ATR</b> (<code>supertrend</code>) - Volatility\n"
-            "6. <b>Bollinger Bands Rev</b> (<code>bb_rev</code>) - Mean Reversion\n\n"
-            "💡 Gunakan <code>/set_strategi &lt;id&gt;</code> untuk mengikuti strategi di atas."
-        )
-        send_telegram_alert(msg, chat_id=chat_id, parse_mode="HTML")
-        return
+def format_daftar_strategi_page(page: int = 0, per_page: int = 12) -> tuple[str, dict]:
+    """Membuat teks dan inline keyboard berhalaman untuk /daftar_strategi agar seluruh strategi bisa dijelajahi."""
+    sorted_strats = _get_sorted_arena_strategies()
+    total = len(sorted_strats)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    start_idx = page * per_page
+    page_items = sorted_strats[start_idx : start_idx + per_page]
 
-    sorted_strats = sorted(
-        ARENA_STRATEGIES_CACHE.values(),
-        key=lambda x: (x.get("win_rate_pct", 0), x.get("return_pct", 0)),
-        reverse=True,
-    )
-
-    top_strats = sorted_strats[:12]
     cur_set = set(get_active_strategies())
+    mode_label = TARGET_MODE.capitalize()
     lines = [
-        "🏆 <b>Peringkat Strategi Teratas di Strategy Arena (Forex):</b>\n"
+        f"🏆 <b>Peringkat Strategi Strategy Arena ({mode_label})</b>\n"
+        f"<i>Halaman {page + 1} dari {total_pages} • Total {total} strategi</i>\n"
     ]
-    for i, s in enumerate(top_strats, 1):
+    for idx, s in enumerate(page_items, start=start_idx + 1):
         sid = s.get("strategy", "")
         sname = s.get("name", sid)
         win = s.get("win_rate_pct", 0.0)
@@ -672,7 +756,7 @@ async def handle_daftar_strategi_command(chat_id: str) -> None:
         ret = s.get("return_pct", 0.0)
         is_active = "✅ " if sid in cur_set else ""
         lines.append(
-            f"<b>{i}. {is_active}{sname}</b> (<code>{sid}</code>)\n"
+            f"<b>{idx}. {is_active}{sname}</b> (<code>{sid}</code>)\n"
             f"   • Win Rate: <b>{win:.1f}%</b> ({trades} trade) | Return: {ret:+.2f}%"
         )
 
@@ -680,9 +764,31 @@ async def handle_daftar_strategi_command(chat_id: str) -> None:
         "\n💡 <b>Cara Mengikuti:</b>",
         "• Ketik <code>/set_strategi &lt;id&gt;</code> untuk mengganti target.",
         "• Ketik <code>/tambah_strategi &lt;id&gt;</code> untuk menambah strategi.",
-        "• Ketik <code>/strategi</code> untuk menu tombol interaktif.",
+        "• Ketik <code>/strategi</code> untuk toggle lewat tombol interaktif.",
     ])
-    send_telegram_alert("\n".join(lines), chat_id=chat_id, parse_mode="HTML")
+
+    keyboard = []
+    if total_pages > 1:
+        nav_row = []
+        if page > 0:
+            nav_row.append({"text": "⬅️ Prev", "callback_data": f"list:page:{page - 1}"})
+        nav_row.append({"text": f"📄 {page + 1}/{total_pages}", "callback_data": "list:noop"})
+        if page < total_pages - 1:
+            nav_row.append({"text": "Next ➡️", "callback_data": f"list:page:{page + 1}"})
+        keyboard.append(nav_row)
+
+    keyboard.append([
+        {"text": "🔄 Refresh", "callback_data": f"list:refresh:{page}"},
+        {"text": "🎯 Toggle di /strategi", "callback_data": "strat:open:0"},
+    ])
+    return "\n".join(lines), {"inline_keyboard": keyboard}
+
+
+async def handle_daftar_strategi_command(chat_id: str, page: int = 0) -> None:
+    """Menampilkan daftar seluruh strategi di Strategy Arena dengan paginasi Next/Prev."""
+    await refresh_arena_strategies_cache()
+    text, keyboard = format_daftar_strategi_page(page=page)
+    send_telegram_alert(text, chat_id=chat_id, parse_mode="HTML", reply_markup=keyboard)
 
 
 async def handle_telegram_callback(cb_query: dict) -> None:
@@ -693,74 +799,131 @@ async def handle_telegram_callback(cb_query: dict) -> None:
     message_id = msg.get("message_id")
     chat_id = str(msg.get("chat", {}).get("id", ""))
 
+    # 1. Callback paginasi /daftar_strategi
+    if cb_data.startswith("list:"):
+        parts = cb_data.split(":")
+        action = parts[1] if len(parts) > 1 else ""
+        page_str = parts[2] if len(parts) > 2 else "0"
+        page = int(page_str) if page_str.isdigit() else 0
+
+        if action == "noop":
+            await asyncio.to_thread(answer_callback_query, cb_id)
+            return
+        if action == "refresh":
+            await refresh_arena_strategies_cache(force=True)
+            await asyncio.to_thread(answer_callback_query, cb_id, text="🔄 Data strategi diperbarui")
+        else:
+            await refresh_arena_strategies_cache(force=False)
+            await asyncio.to_thread(answer_callback_query, cb_id)
+
+        if message_id and chat_id:
+            text, keyboard = format_daftar_strategi_page(page=page)
+            await asyncio.to_thread(edit_telegram_message, chat_id, message_id, text, "HTML", keyboard)
+        return
+
     if not cb_data.startswith("strat:"):
-        answer_callback_query(cb_id)
+        await asyncio.to_thread(answer_callback_query, cb_id)
         return
 
     parts = cb_data.split(":")
     action = parts[1] if len(parts) > 1 else ""
     target = parts[2] if len(parts) > 2 else ""
 
+    if action == "noop":
+        await asyncio.to_thread(answer_callback_query, cb_id)
+        return
+
+    if action == "open":
+        page = int(target) if target.isdigit() else 0
+        await asyncio.to_thread(answer_callback_query, cb_id)
+        send_telegram_alert(
+            format_strategy_menu_text(),
+            chat_id=chat_id,
+            parse_mode="HTML",
+            reply_markup=build_strategy_menu_keyboard(page=page),
+        )
+        return
+
+    if action == "page":
+        page = int(target) if target.isdigit() else 0
+        if not ARENA_STRATEGIES_CACHE:
+            await refresh_arena_strategies_cache()
+        await asyncio.to_thread(answer_callback_query, cb_id)
+        if message_id and chat_id:
+            await asyncio.to_thread(
+                edit_telegram_message,
+                chat_id,
+                message_id,
+                format_strategy_menu_text(),
+                "HTML",
+                build_strategy_menu_keyboard(page=page),
+            )
+        return
+
     if action == "toggle":
         sid = target
+        page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
         current = list(get_active_strategies())
         if sid in current:
             if len(current) <= 1:
-                answer_callback_query(cb_id, text="⚠️ Minimal harus ada 1 strategi aktif!", show_alert=True)
+                await asyncio.to_thread(answer_callback_query, cb_id, text="⚠️ Minimal harus ada 1 strategi aktif!", show_alert=True)
                 return
             current.remove(sid)
             set_active_strategies(current)
-            answer_callback_query(cb_id, text=f"❌ Strategi {get_strategy_display_name(sid)} dinonaktifkan")
+            await asyncio.to_thread(answer_callback_query, cb_id, text=f"❌ Strategi {get_strategy_display_name(sid)} dinonaktifkan")
         else:
             current.append(sid)
             set_active_strategies(current)
-            answer_callback_query(cb_id, text=f"✅ Strategi {get_strategy_display_name(sid)} diaktifkan!")
+            await asyncio.to_thread(answer_callback_query, cb_id, text=f"✅ Strategi {get_strategy_display_name(sid)} diaktifkan!")
 
         if message_id and chat_id:
-            edit_telegram_message(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=format_strategy_menu_text(),
-                reply_markup=build_strategy_menu_keyboard(),
+            await asyncio.to_thread(
+                edit_telegram_message,
+                chat_id,
+                message_id,
+                format_strategy_menu_text(),
+                "HTML",
+                build_strategy_menu_keyboard(page=page),
             )
 
     elif action == "preset":
         await refresh_arena_strategies_cache()
         if not ARENA_STRATEGIES_CACHE:
-            answer_callback_query(cb_id, text="⚠️ Gagal mengambil peringkat strategi dari Strategy Arena", show_alert=True)
+            await asyncio.to_thread(answer_callback_query, cb_id, text="⚠️ Gagal mengambil peringkat strategi dari Strategy Arena", show_alert=True)
             return
 
-        sorted_strats = sorted(
-            ARENA_STRATEGIES_CACHE.values(),
-            key=lambda x: (x.get("win_rate_pct", 0), x.get("return_pct", 0)),
-            reverse=True,
-        )
+        sorted_strats = _get_sorted_arena_strategies()
         count = 3 if target == "top3" else 5
         top_ids = [s["strategy"] for s in sorted_strats[:count] if s.get("strategy")]
         if top_ids:
             set_active_strategies(top_ids)
-            answer_callback_query(cb_id, text=f"🏆 Mengikuti {len(top_ids)} strategi terbaik!")
+            await asyncio.to_thread(answer_callback_query, cb_id, text=f"🏆 Mengikuti {len(top_ids)} strategi terbaik!")
             if message_id and chat_id:
-                edit_telegram_message(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=format_strategy_menu_text(),
-                    reply_markup=build_strategy_menu_keyboard(),
+                await asyncio.to_thread(
+                    edit_telegram_message,
+                    chat_id,
+                    message_id,
+                    format_strategy_menu_text(),
+                    "HTML",
+                    build_strategy_menu_keyboard(page=0),
                 )
 
     elif action == "leaderboard":
-        answer_callback_query(cb_id)
+        await asyncio.to_thread(answer_callback_query, cb_id)
         await handle_daftar_strategi_command(chat_id)
 
     elif action == "refresh":
-        await refresh_arena_strategies_cache()
-        answer_callback_query(cb_id, text="🔄 Data strategi diperbarui")
+        page = int(target) if target.isdigit() else 0
+        await refresh_arena_strategies_cache(force=True)
+        await asyncio.to_thread(answer_callback_query, cb_id, text="🔄 Data strategi diperbarui")
         if message_id and chat_id:
-            edit_telegram_message(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=format_strategy_menu_text(),
-                reply_markup=build_strategy_menu_keyboard(),
+            await asyncio.to_thread(
+                edit_telegram_message,
+                chat_id,
+                message_id,
+                format_strategy_menu_text(),
+                "HTML",
+                build_strategy_menu_keyboard(page=page),
             )
 
 
@@ -813,7 +976,8 @@ async def handle_telegram_command(text: str, chat_id: str) -> None:
         await handle_hapus_strategi_command(arg, chat_id)
 
     elif cmd in ("/daftar_strategi", "/list_strategi", "/daftarstrategi", "/strategies"):
-        await handle_daftar_strategi_command(chat_id)
+        page_num = (int(arg) - 1) if arg.isdigit() and int(arg) >= 1 else 0
+        await handle_daftar_strategi_command(chat_id, page=page_num)
 
     elif cmd == "/status":
         acc = mt5.get_account_info()
@@ -822,8 +986,17 @@ async def handle_telegram_command(text: str, chat_id: str) -> None:
 
         if acc:
             cur_strats = get_active_strategies()
+            daily_pnl_map = trade_storage.get_daily_realized_pnl_by_strategy()
             stop_str = f"{MIN_EQUITY_USD} {acc['currency']}" if MIN_EQUITY_USD > 0 else "0 (Sampai saldo habis)"
-            strats_list = "\n".join(f"  {i+1}. {get_strategy_display_name(s)} (<code>{s}</code>)" for i, s in enumerate(cur_strats))
+            strat_lines = []
+            for i, s in enumerate(cur_strats):
+                s_pnl = daily_pnl_map.get(s.lower(), 0.0)
+                cb_halted = MAX_DAILY_LOSS_USD > 0 and s_pnl <= -abs(MAX_DAILY_LOSS_USD)
+                cb_badge = "🔴 CB HALT" if cb_halted else "🟢 AKTIF"
+                strat_lines.append(
+                    f"  {i+1}. {get_strategy_display_name(s)} (<code>{s}</code>) — PnL Hari Ini: <code>${s_pnl:+.2f}</code> [{cb_badge}]"
+                )
+            strats_list = "\n".join(strat_lines)
             hedging_str = "🟢 AKTIF (Strategi berbeda boleh buka di pair sama)" if ALLOW_HEDGING else "🔴 NONAKTIF (1 pair 1 posisi)"
             status_msg = (
                 "📊 <b>Status Copy-Trade Engine (Real)</b>\n\n"
@@ -834,6 +1007,7 @@ async def handle_telegram_command(text: str, chat_id: str) -> None:
                 f"• <b>Margin Terpakai:</b> <code>{acc['margin']:,.2f} {acc['currency']}</code>\n"
                 f"• <b>Margin Bebas:</b> <code>{acc['margin_free']:,.2f} {acc['currency']}</code>\n"
                 f"• <b>Batas Stop:</b> <code>{stop_str}</code>\n"
+                f"• <b>Max Rugi Harian / Strategi:</b> <code>-${MAX_DAILY_LOSS_USD:.2f} USD</code>\n"
                 f"• <b>Multi-Strategy Hedging:</b> <code>{hedging_str}</code>\n\n"
                 f"🎯 <b>Strategi yang Diikuti ({len(cur_strats)}):</b>\n"
                 f"{strats_list}\n\n"
@@ -849,97 +1023,107 @@ async def handle_telegram_command(text: str, chat_id: str) -> None:
 
 
 async def telegram_command_listener() -> None:
-    """Mendengarkan perintah interaktif dari chat Telegram (long-polling getUpdates)."""
+    """Mendengarkan perintah interaktif dari chat Telegram (long-polling getUpdates via thread-safe Session)."""
     if not TELEGRAM_BOT_TOKEN:
         log.warning("TELEGRAM_BOT_TOKEN tidak dikonfigurasi. Telegram listener dinonaktifkan.")
         return
 
-    # Daftarkan daftar perintah ke BotFather / Menu Telegram
-    try:
-        set_cmd_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMyCommands"
-        commands = [
-            {"command": "strategi", "description": "Menu & pengaturan strategi yang diikuti bot"},
-            {"command": "my_posisi", "description": "Cek posisi aktif di akun MT5 Anda"},
-            {"command": "posisi", "description": "Cek posisi strategi di Strategy Arena"},
-            {"command": "status", "description": "Cek saldo MT5, equity & status engine"},
-            {"command": "help", "description": "Panduan perintah bot"},
-        ]
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12)) as session:
-            async with session.post(set_cmd_url, json={"commands": commands}) as resp:
-                if resp.status == 200:
-                    log.info("✓ Menu perintah bot Telegram berhasil didaftarkan ke Telegram API.")
-    except Exception as exc:
-        log.warning("Gagal mendaftarkan menu perintah Telegram: %s", exc)
-
     poll_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    offset = 0
+    set_cmd_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setMyCommands"
+    commands = [
+        {"command": "strategi", "description": "Menu & pengaturan strategi yang diikuti bot"},
+        {"command": "my_posisi", "description": "Cek posisi aktif di akun MT5 Anda"},
+        {"command": "posisi", "description": "Cek posisi strategi di Strategy Arena"},
+        {"command": "daftar_strategi", "description": "Lihat seluruh 89 strategi Arena berhalaman"},
+        {"command": "status", "description": "Cek saldo MT5, equity & status engine"},
+        {"command": "help", "description": "Panduan perintah bot"},
+    ]
 
-    # Ambil update terakhir untuk membersihkan antrean pesan lama saat startup
+    # Gunakan Session tersendiri khusus thread poller agar keep-alive TCP/TLS tetap hangat (~0.2s)
+    poll_sess = requests.Session()
+
+    def _sync_post_cmds() -> tuple[int, str]:
+        r = poll_sess.post(set_cmd_url, json={"commands": commands}, timeout=(20, 20))
+        return r.status_code, r.text
+
+    def _sync_get_updates(params: dict) -> tuple[int, dict]:
+        r = poll_sess.get(poll_url, params=params, timeout=(20, 30))
+        return r.status_code, (r.json() if r.status_code == 200 else {})
+
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(poll_url, params={"offset": -1, "timeout": 1}, timeout=5) as resp:
-                if resp.status == 200:
-                    init_data = await resp.json()
-                    res = init_data.get("result", [])
-                    if res:
-                        offset = res[-1]["update_id"] + 1
+        st, _ = await asyncio.to_thread(_sync_post_cmds)
+        if st == 200:
+            log.info("✓ Menu perintah bot Telegram berhasil didaftarkan ke Telegram API.")
+    except Exception as exc:
+        safe_err = re.sub(r"bot[0-9]+:[A-Za-z0-9_-]+", "bot<REDACTED>", repr(exc))
+        log.warning("Gagal mendaftarkan menu perintah Telegram: %s", safe_err)
+
+    offset = 0
+    try:
+        st, init_data = await asyncio.to_thread(_sync_get_updates, {"offset": -1, "timeout": 1})
+        if st == 200:
+            res = init_data.get("result", [])
+            if res:
+                offset = res[-1]["update_id"] + 1
     except Exception:
         pass
 
     log.info("✓ Telegram interactive command listener aktif! Siap menerima /strategi, /posisi & /status...")
 
-    while running:
-        try:
-            params = {"offset": offset, "timeout": 20}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(poll_url, params=params, timeout=30) as resp:
-                    if resp.status != 200:
-                        await asyncio.sleep(5)
+    try:
+        while running:
+            try:
+                st, data = await asyncio.to_thread(_sync_get_updates, {"offset": offset, "timeout": 20})
+                if st != 200:
+                    await asyncio.sleep(3)
+                    continue
+
+                if not data.get("ok"):
+                    await asyncio.sleep(3)
+                    continue
+
+                for update in data.get("result", []):
+                    offset = update["update_id"] + 1
+
+                    # 1. Cek Callback Query (Tombol Interaktif)
+                    cb_query = update.get("callback_query")
+                    if cb_query:
+                        from_user = cb_query.get("from", {})
+                        sender_id = str(from_user.get("id", ""))
+                        if TELEGRAM_CHAT_ID and sender_id != TELEGRAM_CHAT_ID:
+                            log.warning("Callback query diabaikan dari chat_id asing: %s", sender_id)
+                            continue
+                        asyncio.create_task(handle_telegram_callback(cb_query))
                         continue
-                    data = await resp.json()
 
-            if not data.get("ok"):
-                await asyncio.sleep(3)
-                continue
+                    # 2. Cek Pesan Masuk
+                    msg = update.get("message") or update.get("edited_message")
+                    if not msg:
+                        continue
 
-            for update in data.get("result", []):
-                offset = update["update_id"] + 1
+                    chat = msg.get("chat", {})
+                    sender_id = str(chat.get("id", ""))
+                    text = msg.get("text", "").strip()
 
-                # 1. Cek Callback Query (Tombol Interaktif)
-                cb_query = update.get("callback_query")
-                if cb_query:
-                    from_user = cb_query.get("from", {})
-                    sender_id = str(from_user.get("id", ""))
+                    # Filter pengirim agar hanya pemilik akun Telegram yang direspons
                     if TELEGRAM_CHAT_ID and sender_id != TELEGRAM_CHAT_ID:
-                        log.warning("Callback query diabaikan dari chat_id asing: %s", sender_id)
+                        log.warning("Pesan diabaikan dari chat_id asing: %s", sender_id)
                         continue
-                    await handle_telegram_callback(cb_query)
-                    continue
 
-                # 2. Cek Pesan Masuk
-                msg = update.get("message") or update.get("edited_message")
-                if not msg:
-                    continue
+                    if not text.startswith("/"):
+                        continue
 
-                chat = msg.get("chat", {})
-                sender_id = str(chat.get("id", ""))
-                text = msg.get("text", "").strip()
+                    asyncio.create_task(handle_telegram_command(text, sender_id))
 
-                # Filter pengirim agar hanya pemilik akun Telegram yang direspons
-                if TELEGRAM_CHAT_ID and sender_id != TELEGRAM_CHAT_ID:
-                    log.warning("Pesan diabaikan dari chat_id asing: %s", sender_id)
-                    continue
-
-                if not text.startswith("/"):
-                    continue
-
-                await handle_telegram_command(text, sender_id)
-
-        except asyncio.CancelledError:
-            break
-        except Exception as exc:
-            log.warning("Exception dalam Telegram listener: %s", exc)
-            await asyncio.sleep(3)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                safe_err = re.sub(r"bot[0-9]+:[A-Za-z0-9_-]+", "bot<REDACTED>", repr(exc))
+                log.warning("Exception dalam Telegram listener: %s", safe_err)
+                poll_sess = requests.Session()
+                await asyncio.sleep(2)
+    finally:
+        poll_sess.close()
 
 
 def handle_shutdown(signum, frame):
@@ -986,16 +1170,45 @@ async def execute_open_signal(sig: dict, acc_info: dict) -> None:
     can_open, reason = RiskManager.can_open_position(symbol, equity, balance, open_positions, strategy=strategy_id)
     if not can_open:
         log.warning("🛑 Sinyal %s %s dibatalkan: %s", action, symbol, reason)
+        strat_title = get_strategy_display_name(strategy_id)
+        if "Circuit Breaker" in reason:
+            _send_throttled_warning(
+                f"cb_halt:{strategy_id}",
+                f"🛑 *SA COPY-TRADE: CIRCUIT BREAKER AKTIF*\n"
+                f"• Sinyal terhenti: `{strat_title}` ({action} `{symbol}`)\n"
+                f"• Alasan: {reason}\n"
+                f"• Hanya strategi `{strategy_id}` yang dijeda hingga reset harian (00:00 UTC / 07:00 WIB); strategi lain tetap aktif.",
+                cooldown_sec=900.0,
+            )
+        elif "Kapasitas posisi" in reason:
+            _send_throttled_warning(
+                f"max_pos:{strategy_id}:{symbol}",
+                f"⚠️ *SA COPY-TRADE: SLOT POSISI PENUH*\n"
+                f"• Sinyal dilewati: `{strat_title}` ({action} `{symbol}`)\n"
+                f"• Alasan: {reason}",
+                cooldown_sec=300.0,
+            )
         return
 
     # 3. Hitung lot size & validasi SL / TP
     lot = RiskManager.calculate_lot(equity, signal_lot=sig.get("lot"))
     sym_info = mt5.get_symbol_info(symbol)
-    digits = sym_info.get("digits", 5) if sym_info else 5
-    point = sym_info.get("point", 0.00001) if sym_info else 0.00001
-    pip_size = point * 10 if digits in (3, 5) else point
+    if not sym_info or sym_info.get("bid", 0.0) <= 0 or sym_info.get("ask", 0.0) <= 0:
+        log.error("Gagal mendapatkan quote MT5 untuk %s saat open_position", symbol)
+        _send_throttled_warning(
+            f"no_quote:{symbol}",
+            f"⚠️ *SA COPY-TRADE: QUOTE MT5 KOSONG*\n• Gagal membuka `{symbol}` ({strategy_id}): quote Ask/Bid broker tidak tersedia.",
+            cooldown_sec=300.0,
+        )
+        return
 
-    entry_price = float(sig.get("price") or (sym_info["ask"] if side == "LONG" else sym_info["bid"]))
+    digits = sym_info.get("digits", 5)
+    point = sym_info.get("point", 0.00001)
+    pip_size = point * 10 if digits in (3, 5) else point
+    bid_px = float(sym_info["bid"])
+    ask_px = float(sym_info["ask"])
+
+    entry_price = ask_px if side == "LONG" else bid_px
     raw_sl = sig.get("stop_loss")
     raw_tp = sig.get("take_profit")
 
@@ -1007,6 +1220,11 @@ async def execute_open_signal(sig: dict, acc_info: dict) -> None:
         tp=raw_tp,
         digits=digits,
         pip_size=pip_size,
+        bid=bid_px,
+        ask=ask_px,
+        stops_level=int(sym_info.get("stops_level", 0)),
+        spread_points=int(sym_info.get("spread", 0)),
+        point=point,
     )
 
     strat_title = get_strategy_display_name(strategy_id)
@@ -1050,6 +1268,14 @@ async def execute_open_signal(sig: dict, acc_info: dict) -> None:
         send_telegram_alert(msg)
     else:
         log.error("Gagal mengeksekusi order %s %s: %s", action, symbol, err)
+        _send_throttled_warning(
+            f"order_err:{strategy_id}:{symbol}",
+            f"❌ *SA COPY-TRADE: EKSEKUSI MT5 GAGAL*\n"
+            f"• Strategi: `{strat_title}` (`{strategy_id}`)\n"
+            f"• Sinyal: {action} `{symbol}` ({lot} lot)\n"
+            f"• Alasan Broker: `{err}`",
+            cooldown_sec=300.0,
+        )
 
 
 async def execute_close_signal(sig: dict, acc_info: dict) -> None:
@@ -1186,8 +1412,8 @@ async def poll_reconciliation_task() -> None:
                 "mode": TARGET_MODE,
                 "api_key": ARENA_API_KEY,
             }
-            async with aiohttp.ClientSession() as session:
-                async with session.get(api_url, params=params, timeout=5) as resp:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(family=socket.AF_INET), timeout=aiohttp.ClientTimeout(total=25)) as session:
+                async with session.get(api_url, params=params) as resp:
                     if resp.status != 200:
                         log.warning("Gagal mengambil posisi aktif dari Strategy Arena API (HTTP %d)", resp.status)
                         continue
@@ -1298,9 +1524,21 @@ async def poll_reconciliation_task() -> None:
                         needs_sync = True
 
                 if needs_sync:
+                    # Cegah loop buka-ulang jika posisi Arena yang sama (opened_at) sudah pernah disalin & terkena SL/TP/Close di MT5
+                    side_str = p.get("side", "LONG")
+                    if open_sec > 0 and trade_storage.has_closed_for_arena_trade(strat, sym, side_str, open_sec):
+                        skip_key = (strat.lower(), sym, side_str.upper(), int(open_sec))
+                        if skip_key not in _RECONCILE_SKIP_LOGGED:
+                            _RECONCILE_SKIP_LOGGED.add(skip_key)
+                            log.info(
+                                "⏩ REKONSILIASI SKIP: '%s' (%s - %s) sudah pernah dieksekusi & ditutup di MT5 (hit SL/TP), tidak dibuka ulang.",
+                                sym, side_str, strat
+                            )
+                        continue
+
                     log.info(
                         "🔍 REKONSILIASI: Menemukan posisi aktif '%s' (%s - %s, usia: %.0fs) di Strategy Arena. Menyinkronkan ke MT5...",
-                        sym, p.get("side"), strat, age_sec
+                        sym, side_str, strat, age_sec
                     )
                     sig_to_open = {
                         "symbol": sym,
@@ -1323,7 +1561,7 @@ async def poll_reconciliation_task() -> None:
         except asyncio.CancelledError:
             break
         except Exception as exc:
-            log.warning("Exception dalam watchdog rekonsiliasi: %s", exc)
+            log.warning("Exception dalam watchdog rekonsiliasi: %r", exc)
 
 
 async def websocket_signal_listener() -> None:

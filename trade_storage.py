@@ -172,19 +172,66 @@ def get_all_open_positions() -> list[dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
-def get_daily_realized_pnl() -> float:
-    """Menghitung total profit/loss realisasi hari ini (UTC 00:00 - sekarang)."""
-    # Menghitung awal hari (midnight UTC)
+def get_daily_realized_pnl(strategy: Optional[str] = None) -> float:
+    """Menghitung total profit/loss realisasi hari ini (UTC 00:00 - sekarang), global atau per-strategi."""
     now = time.time()
     day_start = now - (now % 86400)
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT COALESCE(SUM(pnl), 0.0) FROM trades WHERE status = 'CLOSED' AND close_time >= ?",
-            (day_start,),
-        )
+        if strategy:
+            cur.execute(
+                "SELECT COALESCE(SUM(pnl), 0.0) FROM trades WHERE status = 'CLOSED' AND close_time >= ? AND LOWER(strategy) = LOWER(?)",
+                (day_start, strategy),
+            )
+        else:
+            cur.execute(
+                "SELECT COALESCE(SUM(pnl), 0.0) FROM trades WHERE status = 'CLOSED' AND close_time >= ?",
+                (day_start,),
+            )
         val = cur.fetchone()[0]
         return float(val or 0.0)
+
+
+def get_daily_realized_pnl_by_strategy() -> dict[str, float]:
+    """Mengembalikan ringkasan PnL realisasi hari ini per masing-masing strategi."""
+    now = time.time()
+    day_start = now - (now % 86400)
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT LOWER(strategy) AS strat, COALESCE(SUM(pnl), 0.0) AS total_pnl
+            FROM trades
+            WHERE status = 'CLOSED' AND close_time >= ?
+            GROUP BY LOWER(strategy)
+            """,
+            (day_start,),
+        ).fetchall()
+        return {r["strat"]: float(r["total_pnl"] or 0.0) for r in rows}
+
+
+def has_closed_for_arena_trade(
+    strategy: str,
+    symbol: str,
+    side: str,
+    arena_open_sec: float,
+) -> bool:
+    """Mengecek apakah trade Strategy Arena saat ini sudah pernah dieksekusi lalu ditutup oleh MT5/broker (SL/TP)."""
+    if not strategy or not symbol or arena_open_sec <= 0:
+        return False
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM trades
+            WHERE LOWER(strategy) = LOWER(?)
+              AND UPPER(symbol) = UPPER(?)
+              AND UPPER(side) = UPPER(?)
+              AND status = 'CLOSED'
+              AND open_time >= ?
+            LIMIT 1
+            """,
+            (strategy, symbol, side, float(arena_open_sec) - 30.0),
+        ).fetchone()
+        return row is not None
 
 
 def get_trade_history(limit: int = 20) -> list[dict]:

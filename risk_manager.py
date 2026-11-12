@@ -83,10 +83,14 @@ class RiskManager:
             log.warning("⚠️ RISK GUARD: %s", msg)
             return False, msg
 
-        # 2. Periksa Circuit Breaker: Kerugian harian maksimum ($50 = 5%)
-        daily_loss = trade_storage.get_daily_realized_pnl()
-        if daily_loss <= -abs(MAX_DAILY_LOSS_USD):
-            msg = f"Circuit Breaker aktif! Kerugian harian (-${abs(daily_loss):.2f}) telah menyentuh batas maksimum (-${MAX_DAILY_LOSS_USD:.2f})."
+        # 2. Periksa Circuit Breaker per-strategi: kerugian harian maksimum masing-masing strategi
+        daily_loss = trade_storage.get_daily_realized_pnl(strategy=strategy)
+        if MAX_DAILY_LOSS_USD > 0 and daily_loss <= -abs(MAX_DAILY_LOSS_USD):
+            strat_label = f" strategi '{strategy}'" if strategy else ""
+            msg = (
+                f"Circuit Breaker aktif untuk{strat_label}! "
+                f"Kerugian harian (-${abs(daily_loss):.2f}) telah menyentuh batas maksimum (-${MAX_DAILY_LOSS_USD:.2f})."
+            )
             log.warning("⚠️ RISK GUARD: %s", msg)
             return False, msg
 
@@ -129,27 +133,39 @@ class RiskManager:
         tp: Optional[float],
         digits: int = 5,
         pip_size: float = 0.0001,
+        bid: float = 0.0,
+        ask: float = 0.0,
+        stops_level: int = 0,
+        spread_points: int = 0,
+        point: float = 0.0,
     ) -> Tuple[float, float]:
-        """Memastikan Stop Loss dan Take Profit valid dan terpasang pada order broker."""
+        """Memastikan Stop Loss dan Take Profit valid terhadap harga live Bid/Ask & stops_level broker."""
         final_sl = float(sl or 0.0)
         final_tp = float(tp or 0.0)
 
-        # Fallback perhitungan jarak pip
+        # Fallback perhitungan jarak pip dan jarak minimum broker (stops_level + spread + buffer)
         sl_distance = DEFAULT_SL_PIPS * pip_size
         tp_distance = DEFAULT_TP_PIPS * pip_size
+        pt = point if point > 0 else (pip_size / 10.0)
+        min_points = max(int(stops_level or 0), int(spread_points or 0) + 5, 2)
+        min_broker_dist = max(min_points * pt, pip_size)
 
         is_buy = side.upper() in ("BUY", "LONG")
 
         if is_buy:
-            if final_sl <= 0.0 or final_sl >= entry_price:
-                final_sl = round(entry_price - sl_distance, digits)
-            if final_tp <= 0.0 or final_tp <= entry_price:
-                final_tp = round(entry_price + tp_distance, digits)
+            ref_open = ask if ask > 0 else entry_price
+            ref_sl_side = bid if bid > 0 else entry_price
+            if final_sl <= 0.0 or final_sl >= (ref_sl_side - min_broker_dist):
+                final_sl = round(ref_sl_side - max(sl_distance, min_broker_dist * 1.5), digits)
+            if final_tp <= 0.0 or final_tp <= (ref_open + min_broker_dist):
+                final_tp = round(ref_open + max(tp_distance, min_broker_dist * 1.5), digits)
         else:  # Sell
-            if final_sl <= 0.0 or final_sl <= entry_price:
-                final_sl = round(entry_price + sl_distance, digits)
-            if final_tp <= 0.0 or final_tp >= entry_price:
-                final_tp = round(entry_price - tp_distance, digits)
+            ref_open = bid if bid > 0 else entry_price
+            ref_sl_side = ask if ask > 0 else entry_price
+            if final_sl <= 0.0 or final_sl <= (ref_sl_side + min_broker_dist):
+                final_sl = round(ref_sl_side + max(sl_distance, min_broker_dist * 1.5), digits)
+            if final_tp <= 0.0 or final_tp >= (ref_open - min_broker_dist):
+                final_tp = round(ref_open - max(tp_distance, min_broker_dist * 1.5), digits)
 
         return round(final_sl, digits), round(final_tp, digits)
 

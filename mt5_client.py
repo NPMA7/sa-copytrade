@@ -173,6 +173,7 @@ def _get_sym_info(s):
         "digits": int(info.digits),
         "point": float(info.point),
         "spread": int(info.spread),
+        "stops_level": int(getattr(info, 'trade_stops_level', 0)),
         "filling_mode": int(getattr(info, 'filling_mode', 2)),
         "bid": float(tick.bid) if tick else 0.0,
         "ask": float(tick.ask) if tick else 0.0,
